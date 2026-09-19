@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!--
+      Content-Security-Policy.
+
+      Injected at build time by the `stone-csp` plugin in vite.config.ts so the
+      `connect-src` entry always matches the configured API origin.
+
+      A meta-tag CSP cannot express `frame-ancestors`, which is why the API also
+      sends `X-Frame-Options: DENY`. The full header-form policy, for any host
+      that can set response headers, is documented in SECURITY.md.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="%CSP_POLICY%" />
+    <meta name="referrer" content="no-referrer" />
+
+    <!--
+      Branding placeholders.
+
+      Drop replacements into `public/` using these exact filenames and nothing
+      else needs to change:
+        public/favicon.svg        browser tab icon
+        public/apple-touch-icon.png  180x180, iOS home screen
+        public/logo.svg           in-app mark, rendered by components/layout/Logo.tsx
+    -->
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="theme-color" content="#0c0d10" />
+
+    <title>Stone — Telemetry</title>
+    <meta
+      name="description"
+      content="Telemetry dashboard and procedural 3D stone studio for Pico field devices."
+    />
+
+    <!-- The app is private; nothing here should be indexed. -->
+    <meta name="robots" content="noindex, nofollow" />
+
+    <style>
+      /*
+        Pre-paint background. Without this the browser flashes white before the
+        stylesheet loads, which is jarring on a dark interface.
+      */
+      html {
+        background: #0c0d10;
+        color-scheme: dark;
+      }
+      #root:empty::after {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: #0c0d10;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <div style="padding: 2rem; font-family: system-ui, sans-serif; color: #e6e4df">
+        Stone needs JavaScript to render telemetry charts and the 3D studio.
+      </div>
+    </noscript>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

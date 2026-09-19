@@ -1,0 +1,70 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--status-critical-bg);
+  border: 1px solid color-mix(in srgb, var(--status-critical) 38%, transparent);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: var(--leading-normal);
+  animation: stone-fade-in var(--duration-base) var(--ease-out);
+}
+
+.alertIcon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--status-critical);
+}
+
+.submit {
+  margin-top: var(--space-2);
+}
+
+.strength {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.strengthTrack {
+  display: flex;
+  gap: 3px;
+}
+
+.strengthSegment {
+  flex: 1;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  transition: background-color var(--duration-base) var(--ease-out);
+}
+
+.strengthWeak {
+  background: var(--status-critical);
+}
+
+.strengthFair {
+  background: var(--status-warning);
+}
+
+.strengthStrong {
+  background: var(--status-good);
+}
+
+.strengthLabel {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+
+.link {
+  color: var(--accent);
+  font-weight: 500;
+}

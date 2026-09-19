@@ -1,0 +1,52 @@
+# Fly.io deployment.
+#
+# Secrets are NOT defined here. Set them once with:
+#   fly secrets set MAP_TILES_KEY=... GEOCODE_KEY=...
+# They are injected as environment variables at runtime and never appear in the
+# image, in this file, or in the repository.
+
+app = "stone-api"
+primary_region = "bos"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  HOST = "0.0.0.0"
+  # Must live on the mounted volume so data survives a redeploy.
+  DATABASE_PATH = "/data/stone.sqlite"
+  TRUST_PROXY = "true"
+  COOKIE_SECURE = "true"
+  COOKIE_SAMESITE = "none"
+  # Replace with your Pages origin before the first deploy.
+  ALLOWED_ORIGINS = "https://tykephoon.github.io"
+
+[[mounts]]
+  source = "stone_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  # SQLite on a single volume: exactly one machine may hold the write lock.
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 400
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

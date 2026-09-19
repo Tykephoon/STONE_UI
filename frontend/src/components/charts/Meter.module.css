@@ -1,0 +1,88 @@
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.value {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  height: 6px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-out);
+}
+
+/* Track is a dimmer step of the fill's own family, never a flat grey. */
+.neutral {
+  background: color-mix(in srgb, var(--series-1) 18%, var(--surface-inset));
+}
+.neutral .fill {
+  background: var(--series-1);
+}
+
+.good {
+  background: color-mix(in srgb, var(--status-good) 18%, var(--surface-inset));
+}
+.good .fill {
+  background: var(--status-good);
+}
+
+.warning {
+  background: color-mix(in srgb, var(--status-warning) 18%, var(--surface-inset));
+}
+.warning .fill {
+  background: var(--status-warning);
+}
+
+.serious {
+  background: color-mix(in srgb, var(--status-serious) 20%, var(--surface-inset));
+}
+.serious .fill {
+  background: var(--status-serious);
+}
+
+.critical {
+  background: color-mix(in srgb, var(--status-critical) 20%, var(--surface-inset));
+}
+.critical .fill {
+  background: var(--status-critical);
+}
+
+.target {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 10px;
+  background: var(--text-secondary);
+  border-radius: 1px;
+  transform: translateX(-1px);
+}

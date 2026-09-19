@@ -1,0 +1,104 @@
+name: Deploy frontend to GitHub Pages
+
+# Builds the static SPA and publishes it to Pages on every push to main.
+#
+# This workflow deliberately injects NO repository secret into the build.
+# Everything it produces is world-readable, so a secret here would be a
+# published secret. The only build-time input is VITE_API_BASE_URL, which is a
+# public URL and is therefore a repository *variable*, not a secret.
+#
+# If you ever find yourself reaching for `secrets.*` in the build step, the
+# feature needs a backend proxy route instead — see SECURITY.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch:
+
+# Read-only by default; the deploy job widens this to exactly what Pages needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  # Let an in-progress deploy finish rather than publishing a half-uploaded site.
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Typecheck, test, and audit the bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        env:
+          # A public URL. Set it under Settings → Secrets and variables →
+          # Actions → Variables. It must exactly match an entry in the API's
+          # ALLOWED_ORIGINS, and the API origin must appear in the CSP that the
+          # build derives from it.
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_ENVIRONMENT_LABEL: production
+        run: npm run build
+
+      - name: Fail the build if the bundle is missing its API origin
+        run: |
+          if [ -z "${{ vars.VITE_API_BASE_URL }}" ]; then
+            echo "::error::Repository variable VITE_API_BASE_URL is not set."
+            echo "Set it to the API origin, e.g. https://stone-api.fly.dev"
+            exit 1
+          fi
+
+      # Deep links must survive a refresh. The app uses a hash router, so this
+      # is belt-and-braces for anyone who lands on a path-style URL.
+      - name: Add 404 fallback and Jekyll opt-out
+        run: |
+          cp dist/index.html dist/404.html
+          touch dist/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    name: Publish to Pages
+    needs: verify
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

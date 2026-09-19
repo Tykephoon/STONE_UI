@@ -1,0 +1,116 @@
+.viewport {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(380px, calc(100vw - var(--space-8)));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  animation: stone-rise-in var(--duration-base) var(--ease-out) both;
+}
+
+.icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: var(--leading-normal);
+  /* API messages and device names can be long; wrap rather than overflow. */
+  overflow-wrap: anywhere;
+}
+
+.description {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.dismiss {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px -4px 0 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.dismiss:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.info .icon {
+  color: var(--accent);
+}
+
+.success .icon {
+  color: var(--status-good);
+}
+
+.warning .icon {
+  color: var(--status-warning);
+}
+
+.error .icon {
+  color: var(--status-critical);
+}
+
+.info {
+  border-left: 2px solid var(--accent);
+}
+
+.success {
+  border-left: 2px solid var(--status-good);
+}
+
+.warning {
+  border-left: 2px solid var(--status-warning);
+}
+
+.error {
+  border-left: 2px solid var(--status-critical);
+}
+
+@media (max-width: 640px) {
+  .viewport {
+    left: var(--space-4);
+    right: var(--space-4);
+    bottom: var(--space-4);
+    width: auto;
+  }
+}

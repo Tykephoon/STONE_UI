@@ -1,0 +1,94 @@
+.wrapper {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  text-align: center;
+  background: var(--surface-inset);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: stone-spin 680ms linear infinite;
+}
+
+.failedTitle {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.failedBody {
+  max-width: 34ch;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-relaxed);
+}
+
+/* Draggable pin for the location picker. */
+.pin {
+  width: 18px;
+  height: 18px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+  cursor: grab;
+}
+
+.pin:active {
+  cursor: grabbing;
+}
+
+/* MapLibre's own chrome, retinted for the dark surface. */
+.wrapper :global(.maplibregl-ctrl-group) {
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-sm);
+}
+
+.wrapper :global(.maplibregl-ctrl-group button) {
+  width: 28px;
+  height: 28px;
+}
+
+.wrapper :global(.maplibregl-ctrl-group button + button) {
+  border-top: 1px solid var(--border-default);
+}
+
+.wrapper :global(.maplibregl-ctrl-icon) {
+  filter: invert(0.82);
+}
+
+.wrapper :global(.maplibregl-ctrl-attrib) {
+  background: color-mix(in srgb, var(--surface-0) 76%, transparent);
+  font-size: 10px;
+}
+
+.wrapper :global(.maplibregl-ctrl-attrib a) {
+  color: var(--text-muted);
+}

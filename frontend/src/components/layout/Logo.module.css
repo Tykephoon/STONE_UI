@@ -1,0 +1,21 @@
+.logo {
+  display: inline-flex;
+  align-items: center;
+  user-select: none;
+}
+
+.full {
+  display: block;
+  width: auto;
+}
+
+/*
+  The compact form crops to the mark by clipping the wordmark out of the same
+  asset, so one file serves both sizes.
+*/
+.markOnly {
+  display: block;
+  width: 26px;
+  object-fit: cover;
+  object-position: left center;
+}

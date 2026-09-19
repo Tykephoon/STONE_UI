@@ -1,0 +1,10 @@
+.sparkline {
+  display: block;
+  overflow: visible;
+}
+
+/* A surface-coloured ring keeps the end dot readable against the line. */
+.endDot {
+  stroke: var(--surface-1);
+  stroke-width: 1.5;
+}
