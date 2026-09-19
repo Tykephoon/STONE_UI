@@ -22,6 +22,10 @@ export interface StudioControlsProps {
   dimensionDrafts: { length: string; width: string; height: string };
   onDimensionDraftChange: (axis: 'length' | 'width' | 'height', value: string) => void;
   dimensionErrors: Partial<Record<'length' | 'width' | 'height', string>>;
+  /** How far each surface pull reaches. */
+  onInfluenceChange: (influence: number) => void;
+  onClearSculpt: () => void;
+  hasSculpt: boolean;
 }
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
@@ -33,6 +37,9 @@ export function StudioControls({
   dimensionDrafts,
   onDimensionDraftChange,
   dimensionErrors,
+  onInfluenceChange,
+  onClearSculpt,
+  hasSculpt,
 }: StudioControlsProps): JSX.Element {
   const patch = <K extends keyof DesignParams>(key: K, value: Partial<DesignParams[K]>) => {
     onChange({
@@ -166,6 +173,26 @@ export function StudioControls({
           display={percent(params.form.bulge)}
           onChange={(value) => patch('form', { bulge: value })}
         />
+      </FieldGroup>
+
+      <FieldGroup title="Sculpting">
+        <p className={styles.note}>
+          Drag the dots on the stone to pull the surface out or push it in. This slider sets how
+          far each pull spreads.
+        </p>
+        <Slider
+          label="Pull reach"
+          value={params.sculpt?.influence ?? 0.45}
+          min={0}
+          max={1}
+          display={percent(params.sculpt?.influence ?? 0.45)}
+          onChange={onInfluenceChange}
+        />
+        {hasSculpt && (
+          <Button variant="ghost" size="sm" fullWidth onClick={onClearSculpt}>
+            Clear sculpting
+          </Button>
+        )}
       </FieldGroup>
 
       <FieldGroup title="Surface">

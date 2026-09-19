@@ -162,6 +162,14 @@ export interface DesignParams {
     speckle: number;
     clearcoat: number;
   };
+  /**
+   * Hand-sculpted surface pulls, one per control point. Optional so designs
+   * saved before sculpting existed still load.
+   */
+  sculpt?: {
+    pulls: number[];
+    influence: number;
+  };
 }
 
 export interface Design {

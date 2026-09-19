@@ -29,7 +29,7 @@ import { formatRelative } from '../../lib/time';
 import { LocationPicker, type PickedLocation } from './LocationPicker';
 import { PrintPanel } from './PrintPanel';
 import { ScalePanel } from './ScalePanel';
-import { StoneViewer, type Dimensions } from './StoneViewer';
+import { StoneViewer } from './StoneViewer';
 import { StudioControls } from './StudioControls';
 import {
   type PlacedReference,
@@ -37,6 +37,7 @@ import {
   suggestPlacement,
 } from './referenceObjects';
 import { buildStl } from './printing';
+import { emptySculpt, isSculpted } from './controlPoints';
 import {
   buildParameterLink,
   buildViewerLink,
@@ -79,8 +80,8 @@ export function StudioPage(): JSX.Element {
 
   const [references, setReferences] = useState<PlacedReference[]>([]);
   const [selectedReference, setSelectedReference] = useState<string | null>(null);
-  /** Live dimensions during a stretch drag; null when not dragging. */
-  const [previewDimensions, setPreviewDimensions] = useState<Dimensions | null>(null);
+  /** True while a control point is being dragged, so the mesh previews cheaply. */
+  const [isSculpting, setIsSculpting] = useState(false);
 
   const [hintSeen, setHintSeen] = useLocalPreference('studio.hintSeen', false);
   const showHint = !hintSeen;
@@ -104,7 +105,12 @@ export function StudioPage(): JSX.Element {
   });
   const [dimensionErrors, setDimensionErrors] = useState<Partial<Record<Axis, string>>>({});
 
-  const { geometry, isGenerating, error: generateError, stats } = useStoneGeometry(params);
+  const {
+    geometry,
+    isGenerating,
+    error: generateError,
+    stats,
+  } = useStoneGeometry(params, { interactive: isSculpting });
 
   const designsState = useAsync((signal) => listDesigns(signal), []);
   const designs = designsState.data?.designs ?? [];
@@ -324,21 +330,38 @@ export function StudioPage(): JSX.Element {
     );
   }, []);
 
-  /**
-   * Stretch drag finished. Only now is the mesh regenerated — during the drag
-   * the viewer scales the existing one, which keeps it smooth.
-   */
-  const commitDimensions = useCallback((next: Dimensions) => {
-    setPreviewDimensions(null);
-    setParams((current) => ({ ...current, dimensions: next }));
-    setDimensionDrafts({
-      length: String(Math.round(next.length_mm)),
-      width: String(Math.round(next.width_mm)),
-      height: String(Math.round(next.height_mm)),
-    });
-    setDimensionErrors({});
+  /** Live pull updates while a control point is dragged. */
+  const previewSculpt = useCallback((pulls: number[]) => {
+    setIsSculpting(true);
+    setParams((current) => ({
+      ...current,
+      sculpt: { ...(current.sculpt ?? emptySculpt()), pulls },
+    }));
+  }, []);
+
+  /** Drag finished: drop back to full resolution and mark the design dirty. */
+  const commitSculpt = useCallback((pulls: number[]) => {
+    setIsSculpting(false);
+    setParams((current) => ({
+      ...current,
+      sculpt: { ...(current.sculpt ?? emptySculpt()), pulls },
+    }));
     setIsDirty(true);
   }, []);
+
+  const setInfluence = useCallback((influence: number) => {
+    setParams((current) => ({
+      ...current,
+      sculpt: { ...(current.sculpt ?? emptySculpt()), influence },
+    }));
+    setIsDirty(true);
+  }, []);
+
+  const clearSculpt = useCallback(() => {
+    setParams((current) => ({ ...current, sculpt: emptySculpt() }));
+    setIsDirty(true);
+    toast.info('Sculpting cleared');
+  }, [toast]);
 
   const handleExportStl = useCallback(() => {
     if (!geometry) return;
@@ -449,6 +472,9 @@ export function StudioPage(): JSX.Element {
                 dimensionDrafts={dimensionDrafts}
                 onDimensionDraftChange={handleDimensionDraft}
                 dimensionErrors={dimensionErrors}
+                onInfluenceChange={setInfluence}
+                onClearSculpt={clearSculpt}
+                hasSculpt={isSculpted(params.sculpt ?? emptySculpt())}
               />
             )}
 
@@ -559,13 +585,14 @@ export function StudioPage(): JSX.Element {
               geometry={geometry}
               material={params.material}
               dimensions={params.dimensions}
+              sculpt={params.sculpt ?? emptySculpt()}
               references={references}
               editable
               showGrid={showGrid}
               autoRotate={autoRotate}
               resetSignal={resetSignal}
-              onDimensionsPreview={setPreviewDimensions}
-              onDimensionsCommit={commitDimensions}
+              onSculptPreview={previewSculpt}
+              onSculptCommit={commitSculpt}
               onReferenceMoved={moveReference}
               onReferenceSelected={setSelectedReference}
             />
@@ -581,12 +608,12 @@ export function StudioPage(): JSX.Element {
               <div className={styles.hint} role="note">
                 <span className={styles.hintAxes} aria-hidden="true">
                   <span style={{ background: '#e05252' }} />
+                  <span style={{ background: '#c9c3b6' }} />
                   <span style={{ background: '#4caf50' }} />
-                  <span style={{ background: '#4a8fe0' }} />
                 </span>
                 <span className={styles.hintText}>
-                  Drag the coloured arrows to stretch the stone. Add objects from the{' '}
-                  <strong>Scale</strong> tab and drag them to compare sizes.
+                  Drag the dots on the surface to pull the rock out or push it in. Add objects
+                  from the <strong>Scale</strong> tab and drag them to compare sizes.
                 </span>
                 <button
                   type="button"
@@ -615,12 +642,12 @@ export function StudioPage(): JSX.Element {
 
           <div className={styles.viewerBar}>
             <div className={styles.viewerStats}>
-              {/* Shows the live value mid-drag, the committed one otherwise. */}
-              <span className={previewDimensions ? styles.liveDimensions : undefined}>
-                {Math.round((previewDimensions ?? params.dimensions).length_mm)} ×{' '}
-                {Math.round((previewDimensions ?? params.dimensions).width_mm)} ×{' '}
-                {Math.round((previewDimensions ?? params.dimensions).height_mm)} mm
+              <span>
+                {Math.round(params.dimensions.length_mm)} ×{' '}
+                {Math.round(params.dimensions.width_mm)} ×{' '}
+                {Math.round(params.dimensions.height_mm)} mm
               </span>
+              {isSculpting && <span className={styles.liveDimensions}>sculpting</span>}
               {stats && (
                 <>
                   <span className={styles.separator}>·</span>

@@ -6,6 +6,7 @@
  * trip, not so the server can trust the client.
  */
 import type { DesignParams } from '../../data/types';
+import { emptySculpt, sanitiseSculpt } from './controlPoints';
 
 export const DIMENSION_LIMITS = { min: 1, max: 10_000 } as const;
 export const RESOLUTION_LIMITS = { min: 2, max: 6 } as const;
@@ -50,13 +51,18 @@ export const DEFAULT_PARAMS: DesignParams = {
     speckle: 0.35,
     clearcoat: 0,
   },
+  sculpt: emptySculpt(),
 };
 
 export interface StonePreset {
   id: string;
   name: string;
   description: string;
-  /** Applied over the current parameters; seed and dimensions are preserved. */
+  /**
+   * Applied over the current parameters. Seed, dimensions, and any hand
+   * sculpting are preserved — a preset changes the stone's character, not the
+   * work the user has put into it.
+   */
   patch: Pick<DesignParams, 'form' | 'surface' | 'material'>;
 }
 
@@ -207,6 +213,7 @@ export function sanitiseParams(input: unknown): DesignParams {
       speckle: clamp(Number(material.speckle), 0, 1),
       clearcoat: clamp(Number(material.clearcoat), 0, 1),
     },
+    sculpt: sanitiseSculpt(raw.sculpt),
   };
 }
 

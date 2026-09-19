@@ -68,6 +68,21 @@ export const designParamsSchema = z
         clearcoat: unitInterval,
       })
       .strict(),
+
+    /**
+     * Hand-sculpted surface pulls, one per control point.
+     *
+     * Optional so designs created before sculpting existed still validate. The
+     * array is capped well above the current point count so raising it does not
+     * immediately reject existing clients.
+     */
+    sculpt: z
+      .object({
+        pulls: z.array(z.number().finite().min(-1).max(1)).max(64),
+        influence: unitInterval,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

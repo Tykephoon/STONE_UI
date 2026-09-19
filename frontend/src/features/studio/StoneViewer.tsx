@@ -7,10 +7,12 @@
  *
  * Three things can be dragged:
  *
- *   - **Stretch arrows** on the stone resize one dimension. While dragging, the
- *     mesh is *scaled* rather than regenerated — a level-6 rebuild takes about
- *     150 ms, which would make the drag stutter. The real geometry is rebuilt
- *     once on release.
+ *   - **Control points** on the stone's surface. Pulling one outward raises a
+ *     bump, pushing it in presses a dent, and the effect falls off with
+ *     distance so it reads as sculpting rather than as moving one vertex.
+ *     While dragging, the mesh regenerates at a reduced resolution — level 4
+ *     rebuilds in about 10 ms, against 150 ms at level 6 — and the full-detail
+ *     mesh is rebuilt once on release.
  *   - **Reference objects** slide along the ground plane.
  *   - **Empty space** orbits the camera, as usual.
  *
@@ -40,13 +42,19 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { DesignParams } from '../../data/types';
 import {
+  type ControlHandle,
   MM,
-  type StretchHandle,
-  axisVector,
+  createControlHandle,
   createReferenceMesh,
-  createStretchHandle,
-  positionStretchHandle,
+  positionControlHandle,
+  setControlPull,
 } from './sceneHelpers';
+import {
+  CONTROL_POINT_COUNT,
+  CONTROL_POINT_DIRECTIONS,
+  MAX_PULL_AMPLITUDE,
+  type SculptParams,
+} from './controlPoints';
 import { type PlacedReference, referenceById } from './referenceObjects';
 import styles from './StoneViewer.module.css';
 
@@ -62,35 +70,37 @@ export interface StoneViewerProps {
   dimensions: Dimensions;
   /** Reference objects currently placed in the scene. */
   references?: PlacedReference[];
-  /** Enables the stretch arrows. Off for the read-only viewer. */
+  /** Current sculpt, so handles can be coloured and positioned. */
+  sculpt?: SculptParams;
+  /** Enables the control points. Off for the read-only viewer. */
   editable?: boolean;
   showGrid?: boolean;
   autoRotate?: boolean;
   /** Bumping this re-frames the camera. */
   resetSignal?: number;
-  /** Fires continuously during a stretch drag, for the numeric readout. */
-  onDimensionsPreview?: (dimensions: Dimensions) => void;
-  /** Fires once on release; triggers the real regeneration. */
-  onDimensionsCommit?: (dimensions: Dimensions) => void;
+  /** Fires continuously while a control point is dragged. */
+  onSculptPreview?: (pulls: number[]) => void;
+  /** Fires once on release; triggers the full-resolution regeneration. */
+  onSculptCommit?: (pulls: number[]) => void;
   /** Fires when a reference object finishes being dragged. */
   onReferenceMoved?: (instanceId: string, x: number, z: number) => void;
   onReferenceSelected?: (instanceId: string | null) => void;
   className?: string;
 }
 
-const MIN_MM = 1;
-const MAX_MM = 10_000;
-
-const clampMm = (value: number) => Math.min(MAX_MM, Math.max(MIN_MM, value));
+const clampPull = (value: number) => Math.min(1, Math.max(-1, value));
 
 type DragState =
   | {
-      kind: 'stretch';
-      handle: StretchHandle;
+      kind: 'control';
+      handle: ControlHandle;
       origin: Vector3;
+      /** Outward radial direction this point is pulled along. */
       axis: Vector3;
       startOffset: number;
-      startDimensions: Dimensions;
+      startPull: number;
+      /** Scene units that correspond to a pull of 1. */
+      unitsPerPull: number;
     }
   | {
       kind: 'reference';
@@ -104,13 +114,14 @@ export function StoneViewer({
   geometry,
   material,
   dimensions,
+  sculpt,
   references = [],
   editable = false,
   showGrid = true,
   autoRotate = false,
   resetSignal = 0,
-  onDimensionsPreview,
-  onDimensionsCommit,
+  onSculptPreview,
+  onSculptCommit,
   onReferenceMoved,
   onReferenceSelected,
   className,
@@ -126,7 +137,7 @@ export function StoneViewer({
   const gridRef = useRef<GridHelper | null>(null);
   const frameRef = useRef<number | null>(null);
 
-  const handlesRef = useRef<StretchHandle[]>([]);
+  const handlesRef = useRef<ControlHandle[]>([]);
   const gizmoGroupRef = useRef<Group | null>(null);
   const referenceGroupRef = useRef<Group | null>(null);
   const referenceHandlesRef = useRef<
@@ -137,13 +148,15 @@ export function StoneViewer({
   const selectedRef = useRef<string | null>(null);
   const dimensionsRef = useRef<Dimensions>(dimensions);
   dimensionsRef.current = dimensions;
+  const pullsRef = useRef<number[]>(sculpt?.pulls ?? []);
+  pullsRef.current = sculpt?.pulls ?? [];
 
   // Callbacks in refs so the scene is built once and never torn down by a
   // parent handing down new function identities.
-  const previewRef = useRef(onDimensionsPreview);
-  previewRef.current = onDimensionsPreview;
-  const commitRef = useRef(onDimensionsCommit);
-  commitRef.current = onDimensionsCommit;
+  const previewRef = useRef(onSculptPreview);
+  previewRef.current = onSculptPreview;
+  const commitRef = useRef(onSculptCommit);
+  commitRef.current = onSculptCommit;
   const movedRef = useRef(onReferenceMoved);
   movedRef.current = onReferenceMoved;
   const selectedCallbackRef = useRef(onReferenceSelected);
@@ -237,15 +250,9 @@ export function StoneViewer({
     scene.add(referenceGroup);
     referenceGroupRef.current = referenceGroup;
 
-    // Five arrows: both ends of length and width, and the top for height.
-    // Height grows from the ground, so it has no lower handle.
-    const handles: StretchHandle[] = [
-      createStretchHandle('length', 1),
-      createStretchHandle('length', -1),
-      createStretchHandle('width', 1),
-      createStretchHandle('width', -1),
-      createStretchHandle('height', 1),
-    ];
+    const handles: ControlHandle[] = Array.from({ length: CONTROL_POINT_COUNT }, (_, index) =>
+      createControlHandle(index),
+    );
     for (const handle of handles) gizmoGroup.add(handle.group);
     handlesRef.current = handles;
 
@@ -320,7 +327,7 @@ export function StoneViewer({
     const dragPlane = new Plane();
     const scratch = new Vector3();
 
-    const pickHandle = (ndc: Vector2): StretchHandle | null => {
+    const pickHandle = (ndc: Vector2): ControlHandle | null => {
       if (!editable || !gizmoGroupRef.current?.visible) return null;
       raycaster.setFromCamera(ndc, camera);
       for (const handle of handlesRef.current) {
@@ -358,9 +365,8 @@ export function StoneViewer({
         const hovered = pickHandle(ndc);
         let changed = false;
         for (const handle of handlesRef.current) {
-          const shouldHighlight = handle === hovered;
-          handle.setHighlighted(shouldHighlight);
-          if (shouldHighlight) changed = true;
+          handle.setState(handle === hovered ? 'hover' : 'idle');
+          if (handle === hovered) changed = true;
         }
         const overReference = hovered ? null : pickReference(ndc);
         renderer.domElement.style.cursor = hovered
@@ -381,31 +387,25 @@ export function StoneViewer({
 
       raycaster.setFromCamera(ndc, camera);
 
-      if (drag.kind === 'stretch') {
+      if (drag.kind === 'control') {
         const hit = raycaster.ray.intersectPlane(dragPlane, scratch);
         if (!hit) return;
 
-        // Distance along the drag axis from where the handle started.
+        // How far the pointer has travelled along the point's outward normal.
         const offset = hit.clone().sub(drag.origin).dot(drag.axis);
-        const deltaMm = (offset - drag.startOffset) / MM;
+        const travel = offset - drag.startOffset;
 
-        const next = { ...drag.startDimensions };
+        const next = clampPull(drag.startPull + travel / drag.unitsPerPull);
 
-        if (drag.handle.axis === 'height') {
-          // Height grows from the ground, so the handle's travel is the change.
-          next.height_mm = clampMm(drag.startDimensions.height_mm + deltaMm * drag.handle.direction);
-        } else {
-          /*
-            Length and width are centred on the origin, so a handle sits at half
-            the dimension. Moving it by d changes the dimension by 2d — the far
-            side grows to match, which is what "stretch" looks like.
-          */
-          const key = drag.handle.axis === 'length' ? 'length_mm' : 'width_mm';
-          next[key] = clampMm(drag.startDimensions[key] + deltaMm * drag.handle.direction * 2);
-        }
+        const pulls = [...pullsRef.current];
+        pulls[drag.handle.index] = next;
+        // Keep the ref current so a fast second drag starts from the right place
+        // even before React has re-rendered.
+        pullsRef.current = pulls;
 
-        applyPreviewScale(next);
-        previewRef.current?.(next);
+        setControlPull(drag.handle, next);
+        previewRef.current?.(pulls);
+        requestRender.current();
         return;
       }
 
@@ -431,8 +431,9 @@ export function StoneViewer({
         const origin = new Vector3();
         handle.group.getWorldPosition(origin);
 
-        const [ax, ay, az] = axisVector(handle.axis);
-        const axis = new Vector3(ax, ay, az);
+        // Control points are pulled along their own outward direction.
+        const direction = CONTROL_POINT_DIRECTIONS[handle.index]!;
+        const axis = new Vector3(direction[0], direction[1], direction[2]).normalize();
 
         /*
           Drag along a plane that contains the axis and faces the camera as
@@ -449,14 +450,30 @@ export function StoneViewer({
         const hit = raycaster.ray.intersectPlane(dragPlane, new Vector3());
         if (!hit) return;
 
+        /*
+          A pull of 1 displaces the surface by MAX_PULL_AMPLITUDE of the base
+          radius. The mesh is scaled non-uniformly to the bounding box, so the
+          mean half-dimension is the honest single number to convert pointer
+          travel into pull.
+        */
+        const meanHalfExtent =
+          ((dimensionsRef.current.length_mm +
+            dimensionsRef.current.width_mm +
+            dimensionsRef.current.height_mm) /
+            6) *
+          MM;
+
         dragRef.current = {
-          kind: 'stretch',
+          kind: 'control',
           handle,
           origin,
           axis,
           startOffset: hit.clone().sub(origin).dot(axis),
-          startDimensions: { ...dimensionsRef.current },
+          startPull: pullsRef.current[handle.index] ?? 0,
+          unitsPerPull: Math.max(1e-6, meanHalfExtent * MAX_PULL_AMPLITUDE),
         };
+
+        handle.setState('active');
 
         controls.enabled = false;
         renderer.domElement.setPointerCapture(event.pointerId);
@@ -505,11 +522,11 @@ export function StoneViewer({
         renderer.domElement.releasePointerCapture(event.pointerId);
       }
 
-      if (drag.kind === 'stretch') {
-        // Clear the preview scale; the committed dimensions rebuild the mesh.
-        const stone = stoneRef.current;
-        if (stone) stone.scale.setScalar(MM);
-        commitRef.current?.(dimensionsRef.current);
+      if (drag.kind === 'control') {
+        drag.handle.setState('idle');
+        // Commit the pulls accumulated during the drag, not the stale prop —
+        // reading the prop here was why the previous gizmo snapped back.
+        commitRef.current?.([...pullsRef.current]);
       } else {
         movedRef.current?.(
           drag.instanceId,
@@ -518,26 +535,6 @@ export function StoneViewer({
         );
       }
 
-      requestRender.current();
-    };
-
-    /** Stretch preview: scale the existing mesh instead of rebuilding it. */
-    const applyPreviewScale = (next: Dimensions) => {
-      const stone = stoneRef.current;
-      const drag = dragRef.current;
-      if (!stone || drag?.kind !== 'stretch') return;
-
-      const base = drag.startDimensions;
-      stone.scale.set(
-        MM * (next.length_mm / base.length_mm),
-        MM * (next.height_mm / base.height_mm),
-        MM * (next.width_mm / base.width_mm),
-      );
-
-      const box = stone.geometry.boundingBox;
-      if (box) stone.position.y = -box.min.y * stone.scale.y;
-
-      for (const handle of handlesRef.current) positionStretchHandle(handle, next);
       requestRender.current();
     };
 
@@ -593,17 +590,72 @@ export function StoneViewer({
   }, [material]);
 
   // -------------------------------------------------------------------------
-  // Gizmo placement
+  // Control point placement
   // -------------------------------------------------------------------------
   useEffect(() => {
-    const gizmoGroup = gizmoGroupRef.current;
-    if (!gizmoGroup) return;
+    const stone = stoneRef.current;
+    const handles = handlesRef.current;
+    if (!stone || handles.length === 0) return;
 
-    gizmoGroup.visible = editable && geometry !== null;
-    for (const handle of handlesRef.current) positionStretchHandle(handle, dimensions);
+    const visible = editable && geometry !== null;
+    for (const handle of handles) handle.group.visible = visible;
+
+    if (!visible || !geometry) {
+      requestRender.current();
+      return;
+    }
+
+    /*
+      Find where each control direction meets the surface by casting a ray from
+      the centre of the stone outward. Doing it geometrically rather than
+      recomputing the generator's radius keeps the handles honest: they sit on
+      the mesh actually being displayed, including its taper, flatten, and
+      faceting.
+    */
+    const raycaster = new Raycaster();
+    const centre = new Vector3();
+    stone.getWorldPosition(centre);
+
+    for (const handle of handles) {
+      const direction = CONTROL_POINT_DIRECTIONS[handle.index]!;
+      const ray = new Vector3(direction[0], direction[1], direction[2]).normalize();
+
+      raycaster.set(centre, ray);
+      const hit = raycaster.intersectObject(stone, false)[0];
+
+      if (hit) {
+        positionControlHandle(
+          handle,
+          [hit.point.x - centre.x, hit.point.y - centre.y, hit.point.z - centre.z],
+          // Face the ring along the surface normal where there is one, and
+          // along the ray otherwise.
+          hit.face
+            ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z]
+            : [ray.x, ray.y, ray.z],
+        );
+      } else {
+        // No hit means the ray missed a concave region; fall back to the
+        // bounding sphere so the handle is still reachable.
+        const fallback = (geometry.boundingSphere?.radius ?? 100) * MM;
+        positionControlHandle(
+          handle,
+          [ray.x * fallback, ray.y * fallback, ray.z * fallback],
+          [ray.x, ray.y, ray.z],
+        );
+      }
+
+      setControlPull(handle, pullsRef.current[handle.index] ?? 0);
+    }
+
+    // Handles are children of the stone group's parent, so they need the same
+    // vertical offset the stone has.
+    if (gizmoGroupRef.current) {
+      gizmoGroupRef.current.position.copy(stone.position);
+      gizmoGroupRef.current.visible = visible;
+    }
 
     requestRender.current();
-  }, [dimensions, editable, geometry]);
+  }, [geometry, editable, dimensions, sculpt]);
 
   // -------------------------------------------------------------------------
   // Reference objects

@@ -155,6 +155,18 @@ export function encodeParams(params: DesignParams, name: string): string {
       round(params.material.speckle),
       round(params.material.clearcoat),
     ],
+    // Omitted entirely when nothing has been sculpted, so an untouched stone
+    // produces the same short link it always did.
+    ...(params.sculpt && params.sculpt.pulls.some((pull) => Math.abs(pull) > 0.001)
+      ? {
+          k: [
+            round(params.sculpt.influence, 2),
+            // Two decimals is finer than the handle can be dragged and keeps
+            // the link roughly a third shorter than full precision.
+            ...params.sculpt.pulls.map((pull) => round(pull, 2)),
+          ],
+        }
+      : {}),
   };
 
   return toBase64Url(JSON.stringify(compact));
@@ -181,6 +193,7 @@ export function decodeParams(encoded: string): DecodedParams | null {
     const f = parsed.f as number[] | undefined;
     const u = parsed.u as number[] | undefined;
     const m = parsed.m as (string | number)[] | undefined;
+    const k = parsed.k as number[] | undefined;
     if (!d || !f || !u || !m) return null;
 
     // sanitiseParams clamps every field, so a hostile link cannot produce a
@@ -210,6 +223,7 @@ export function decodeParams(encoded: string): DecodedParams | null {
         speckle: m[4],
         clearcoat: m[5],
       },
+      ...(k && k.length > 1 ? { sculpt: { influence: k[0], pulls: k.slice(1) } } : {}),
     });
 
     const name = typeof parsed.n === 'string' && parsed.n.trim() ? parsed.n.trim() : 'Shared stone';

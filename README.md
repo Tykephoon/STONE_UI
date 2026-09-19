@@ -156,15 +156,25 @@ bytes and a shared link reproduces exactly what its author saw.
   exact rescale → normals blended smooth-to-flat, plus vertex colours for
   mineral veining and crevice shading.
 
-### Stretching it
+### Sculpting it
 
-Coloured arrows on the stone resize one dimension each — red for length, green
-for height, blue for width, the convention every 3D tool uses. Drag one and the
-mesh scales live; the real geometry is rebuilt once you let go, because a
-level-6 rebuild takes about 150 ms and would make the drag stutter.
+Fourteen control points sit on the stone's surface as small dots, evenly spread
+via a Fibonacci sphere so the top is not over-controlled and the waist
+under-controlled. Hover one and a ring shows the area it affects; drag it
+outward to raise a bump, inward to press a dent.
 
-The numeric fields stay in sync both ways, so you can drag roughly and then type
-an exact figure.
+Pulls are **local, not uniform**. Influence falls off smoothly with angular
+distance, so a pull shapes a region rather than scaling the whole stone.
+Overlapping pulls reinforce each other. The **Pull reach** slider sets how far
+each one spreads, and dots tint green outward or red inward so the sculpt reads
+at a glance.
+
+While you drag, the mesh rebuilds at level 4 — about 10 ms, against 150 ms at
+level 6 — so the surface follows the pointer. Full detail returns the moment you
+let go.
+
+Overall size stays with the three dimension fields, and the mesh is rescaled
+after sculpting, so those figures remain exact however much you carve.
 
 ### Size reference
 

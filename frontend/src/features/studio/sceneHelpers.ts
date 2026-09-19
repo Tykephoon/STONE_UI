@@ -1,6 +1,6 @@
 /**
  * Scene construction helpers: reference-object meshes, their labels, and the
- * stretch gizmo.
+ * surface control points.
  *
  * Kept out of the viewer so that file is about interaction rather than about
  * building geometry.
@@ -25,8 +25,7 @@ import {
   SphereGeometry,
   Sprite,
   SpriteMaterial,
-  ConeGeometry,
-  CylinderGeometry as ShaftGeometry,
+  Vector3,
 } from 'three';
 import type { ReferenceObject } from './referenceObjects';
 
@@ -170,126 +169,119 @@ export function createReferenceMesh(object: ReferenceObject, label: string): Ref
 }
 
 // ---------------------------------------------------------------------------
-// Stretch gizmo
+// Surface control points
 // ---------------------------------------------------------------------------
 
-export type StretchAxis = 'length' | 'width' | 'height';
-
-export interface StretchHandle {
+export interface ControlHandle {
   group: Group;
+  /** Invisible sphere that pointer events test against. */
   pickTarget: Mesh;
-  axis: StretchAxis;
-  /** +1 or −1: which end of the axis this handle sits on. */
-  direction: number;
-  setHighlighted: (value: boolean) => void;
+  index: number;
+  setState: (state: 'idle' | 'hover' | 'active') => void;
   dispose: () => void;
 }
 
+/** Neutral, pulled out, pushed in. Colour carries the sign of the pull. */
+const DOT_NEUTRAL = 0xc9c3b6;
+const DOT_OUT = 0x4caf50;
+const DOT_IN = 0xe05252;
+
 /**
- * Axis colours follow the near-universal X=red, Y=green, Z=blue convention.
+ * A control point: a small dot on the surface, with a ring that appears on
+ * hover to show the area a pull will affect.
  *
- * This is the one place the app deliberately ignores its own palette: anyone
- * who has used a 3D tool reads these colours as axes instantly, and inventing a
- * house scheme would trade that recognition for nothing.
+ * Both draw over the stone. A handle hidden inside the geometry it controls is
+ * a handle nobody can use.
  */
-const AXIS_COLOR: Record<StretchAxis, number> = {
-  length: 0xe05252, // X
-  height: 0x4caf50, // Y
-  width: 0x4a8fe0, // Z
-};
-
-export function createStretchHandle(axis: StretchAxis, direction: number): StretchHandle {
+export function createControlHandle(index: number): ControlHandle {
   const group = new Group();
-  const color = AXIS_COLOR[axis];
 
-  const shaftLength = 0.03;
-  const material = new MeshBasicMaterial({ color, depthTest: false, transparent: true });
+  const dotMaterial = new MeshBasicMaterial({
+    color: DOT_NEUTRAL,
+    depthTest: false,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const dotGeometry = new SphereGeometry(0.0038, 16, 12);
+  const dot = new Mesh(dotGeometry, dotMaterial);
+  group.add(dot);
 
-  const shaftGeometry = new ShaftGeometry(0.0016, 0.0016, shaftLength, 12);
-  const shaft = new Mesh(shaftGeometry, material);
-  shaft.position.y = shaftLength / 2;
-  group.add(shaft);
+  const ringMaterial = new MeshBasicMaterial({
+    color: 0x3987e5,
+    side: DoubleSide,
+    depthTest: false,
+    transparent: true,
+    opacity: 0,
+  });
+  const ringGeometry = new RingGeometry(0.0072, 0.0092, 32);
+  const ring = new Mesh(ringGeometry, ringMaterial);
+  group.add(ring);
 
-  const coneGeometry = new ConeGeometry(0.0055, 0.014, 16);
-  const cone = new Mesh(coneGeometry, material);
-  cone.position.y = shaftLength + 0.007;
-  group.add(cone);
-
-  /*
-    An invisible cylinder covering the whole handle is what pointer events
-    actually test against. The drawn arrow is a few millimetres across on
-    screen; hitting that exactly would be unreasonable, so the hit volume is
-    deliberately far larger than the visible mark.
-  */
-  const pickGeometry = new ShaftGeometry(0.011, 0.011, shaftLength + 0.02, 8);
+  // A generous invisible target: the dot is a few pixels across on screen, and
+  // requiring a pixel-perfect hit would make the tool feel broken.
+  const pickGeometry = new SphereGeometry(0.014, 12, 8);
   const pickTarget = new Mesh(
     pickGeometry,
     new MeshBasicMaterial({ visible: false, depthTest: false }),
   );
-  pickTarget.position.y = (shaftLength + 0.02) / 2;
   group.add(pickTarget);
 
-  // Gizmos draw over the model so they are never lost inside it.
   group.renderOrder = 1000;
-  for (const child of group.children) child.renderOrder = 1000;
+  dot.renderOrder = 1001;
+  ring.renderOrder = 1000;
 
   return {
     group,
     pickTarget,
-    axis,
-    direction,
-    setHighlighted: (value: boolean) => {
-      material.color.setHex(value ? 0xffffff : color);
+    index,
+    setState: (state) => {
+      const scale = state === 'idle' ? 1 : state === 'hover' ? 1.35 : 1.6;
+      dot.scale.setScalar(scale);
+      ringMaterial.opacity = state === 'idle' ? 0 : state === 'hover' ? 0.55 : 0.9;
     },
     dispose: () => {
-      shaftGeometry.dispose();
-      coneGeometry.dispose();
+      dotGeometry.dispose();
+      dotMaterial.dispose();
+      ringGeometry.dispose();
+      ringMaterial.dispose();
       pickGeometry.dispose();
-      material.dispose();
       (pickTarget.material as MeshBasicMaterial).dispose();
     },
   };
 }
 
-/**
- * Orient a handle along its axis and place it at the surface of the bounding
- * box, offset outward so it does not intersect the mesh.
- */
-export function positionStretchHandle(
-  handle: StretchHandle,
-  dimensions: { length_mm: number; width_mm: number; height_mm: number },
-): void {
-  const { group, axis, direction } = handle;
-  const gap = 0.012;
+/** Tint a dot by the sign and size of its pull, so the sculpt reads at a glance. */
+export function setControlPull(handle: ControlHandle, pull: number): void {
+  const dot = handle.group.children[0] as Mesh;
+  const material = dot.material as MeshBasicMaterial;
 
-  group.rotation.set(0, 0, 0);
-
-  if (axis === 'length') {
-    // Arrows point along +X or −X; the handle is modelled pointing up (+Y).
-    group.rotation.z = direction > 0 ? -Math.PI / 2 : Math.PI / 2;
-    group.position.set(
-      direction * ((dimensions.length_mm / 2) * MM + gap),
-      (dimensions.height_mm / 2) * MM,
-      0,
-    );
-  } else if (axis === 'width') {
-    group.rotation.x = direction > 0 ? Math.PI / 2 : -Math.PI / 2;
-    group.position.set(
-      0,
-      (dimensions.height_mm / 2) * MM,
-      direction * ((dimensions.width_mm / 2) * MM + gap),
-    );
-  } else {
-    // Height grows upward from the ground, so there is only a +Y handle.
-    group.position.set(0, dimensions.height_mm * MM + gap, 0);
+  if (Math.abs(pull) < 0.02) {
+    material.color.setHex(DOT_NEUTRAL);
+    return;
   }
+
+  const target = new Color(pull > 0 ? DOT_OUT : DOT_IN);
+  // Blend toward the extreme so a gentle pull is visibly gentler than a hard one.
+  material.color.set(new Color(DOT_NEUTRAL).lerp(target, Math.min(1, Math.abs(pull) * 1.6)));
 }
 
-/** World-space unit vector a handle drags along. */
-export function axisVector(axis: StretchAxis): [number, number, number] {
-  if (axis === 'length') return [1, 0, 0];
-  if (axis === 'width') return [0, 0, 1];
-  return [0, 1, 0];
+/**
+ * Place a handle on the deformed surface and turn its ring to face outward.
+ *
+ * `surfacePoint` is in scene units and already includes the sculpt, so the dot
+ * sits on the stone rather than hovering off a notional sphere.
+ */
+export function positionControlHandle(
+  handle: ControlHandle,
+  surfacePoint: [number, number, number],
+  normal: [number, number, number],
+): void {
+  handle.group.position.set(surfacePoint[0], surfacePoint[1], surfacePoint[2]);
+
+  // Lay the ring flat against the surface: its default plane faces +Z.
+  const target = new Vector3(normal[0], normal[1], normal[2]);
+  const ring = handle.group.children[1] as Mesh;
+  ring.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), target.normalize());
 }
 
 export function disposeObject(object: Object3D): void {

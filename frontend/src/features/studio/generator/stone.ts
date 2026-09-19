@@ -21,6 +21,7 @@
  *      crevice shading.
  */
 import { Noise3D, clamp, hashSeed, makeRandom, mix, smoothstep } from './noise';
+import { type SculptParams, emptySculpt, sculptDisplacement } from '../controlPoints';
 
 export interface StoneDimensions {
   length_mm: number;
@@ -59,6 +60,8 @@ export interface StoneParams {
   form: StoneForm;
   surface: StoneSurface;
   material: StoneMaterial;
+  /** Per-control-point surface pulls. Absent means an unsculpted stone. */
+  sculpt?: SculptParams;
 }
 
 export interface StoneMesh {
@@ -239,6 +242,7 @@ function radiusAt(
   detailNoise: Noise3D,
   planes: FacetPlane[],
   offsets: { ax: number; ay: number; az: number; bias: [number, number, number] },
+  sculpt: SculptParams,
 ): number {
   const { form, surface } = params;
 
@@ -269,6 +273,13 @@ function radiusAt(
     const underside = smoothstep(0.1, -0.85, dy);
     radius *= 1 - surface.erosion * 0.14 * underside;
   }
+
+  /*
+    Hand sculpting. Applied before faceting and grain so a pulled bump can
+    still be cut by a fracture plane and still carries surface texture —
+    applying it last would leave a smooth blob stuck onto a rough stone.
+  */
+  radius += sculptDisplacement(dx, dy, dz, sculpt);
 
   // Fracture faces.
   if (surface.faceting > 0) {
@@ -327,6 +338,7 @@ export function generateStone(params: StoneParams): StoneMesh {
 
   const planes = buildFacetPlanes(random, 9 + Math.floor(random() * 6));
 
+  const sculpt = params.sculpt ?? emptySculpt();
   const resolution = Math.max(2, Math.min(MAX_RESOLUTION, Math.round(params.surface.resolution)));
   const sphere = buildIcosphere(resolution);
 
@@ -344,7 +356,7 @@ export function generateStone(params: StoneParams): StoneMesh {
     const dy = sphere.vertices[i * 3 + 1]!;
     const dz = sphere.vertices[i * 3 + 2]!;
 
-    const radius = radiusAt(dx, dy, dz, params, noise, detailNoise, planes, offsets);
+    const radius = radiusAt(dx, dy, dz, params, noise, detailNoise, planes, offsets, sculpt);
     radii[i] = radius;
     if (radius < minRadius) minRadius = radius;
     if (radius > maxRadius) maxRadius = radius;
