@@ -19,51 +19,22 @@ const migrations: Migration[] = [
     name: 'initial_schema',
     sql: /* sql */ `
       -- ---------------------------------------------------------------
-      -- users
-      -- ---------------------------------------------------------------
-      CREATE TABLE users (
-        id             TEXT PRIMARY KEY,
-        email          TEXT NOT NULL UNIQUE,  -- normalised: trimmed + lowercased
-        email_display  TEXT NOT NULL,         -- as the user typed it
-        password_hash  TEXT NOT NULL,         -- Argon2id
-        display_name   TEXT,
-        created_at     TEXT NOT NULL,
-        updated_at     TEXT NOT NULL
-      );
-
-      -- ---------------------------------------------------------------
-      -- sessions
-      --
-      -- The cookie carries an opaque 256-bit token; only its SHA-256 lives
-      -- here, so a database leak does not yield usable sessions. csrf_token is
-      -- stored in the clear on purpose: it is a synchroniser token, worthless
-      -- without the httpOnly session cookie it is bound to.
-      -- ---------------------------------------------------------------
-      CREATE TABLE sessions (
-        id                  TEXT PRIMARY KEY,
-        user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        token_hash          TEXT NOT NULL UNIQUE,
-        csrf_token          TEXT NOT NULL,
-        created_at          TEXT NOT NULL,
-        expires_at          TEXT NOT NULL,  -- sliding window
-        absolute_expires_at TEXT NOT NULL,  -- hard cap, never extended
-        last_used_at        TEXT NOT NULL,
-        user_agent          TEXT
-      );
-      CREATE INDEX idx_sessions_user ON sessions(user_id);
-      CREATE INDEX idx_sessions_expiry ON sessions(expires_at);
-
-      -- ---------------------------------------------------------------
       -- devices
+      --
+      -- There are no user accounts: this is a single-tenant installation
+      -- and every device, reading, and design belongs to the installation
+      -- rather than to a person.
       --
       -- key_hash is SHA-256 of a 256-bit random secret. Argon2 is the right
       -- answer for human-chosen passwords; for a full-entropy machine key it
       -- would only add latency to every ingest call without adding security,
       -- because there is no dictionary to search.
+      --
+      -- Device keys are the one credential the system still has, and they are
+      -- what stops an anonymous caller writing to the readings table.
       -- ---------------------------------------------------------------
       CREATE TABLE devices (
         id             TEXT PRIMARY KEY,
-        user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         name           TEXT NOT NULL,
         key_hash       TEXT NOT NULL UNIQUE,
         key_prefix     TEXT NOT NULL,   -- non-secret, shown in the UI for identification
@@ -72,19 +43,13 @@ const migrations: Migration[] = [
         key_rotated_at TEXT,
         last_seen_at   TEXT
       );
-      CREATE INDEX idx_devices_user ON devices(user_id);
 
       -- ---------------------------------------------------------------
       -- readings (append-only)
-      --
-      -- user_id is denormalised from devices so that every read path can scope
-      -- by owner in the WHERE clause without a join, and so ownership can never
-      -- be accidentally omitted.
       -- ---------------------------------------------------------------
       CREATE TABLE readings (
         id                      TEXT PRIMARY KEY,
         device_id               TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-        user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
         recorded_at             TEXT NOT NULL,     -- device clock, UTC ISO-8601
         received_at             TEXT NOT NULL,     -- server clock, UTC ISO-8601
@@ -115,7 +80,7 @@ const migrations: Migration[] = [
         extra                   TEXT NOT NULL DEFAULT '{}',  -- JSON: unknown device keys, preserved
         created_at              TEXT NOT NULL
       );
-      CREATE INDEX idx_readings_user_time   ON readings(user_id, recorded_at DESC);
+      CREATE INDEX idx_readings_time        ON readings(recorded_at DESC);
       CREATE INDEX idx_readings_device_time ON readings(device_id, recorded_at DESC);
 
       -- Immutability is enforced by the database, not by the honour system of
@@ -131,7 +96,6 @@ const migrations: Migration[] = [
       -- ---------------------------------------------------------------
       CREATE TABLE designs (
         id          TEXT PRIMARY KEY,
-        user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         name        TEXT NOT NULL,
         params      TEXT NOT NULL,   -- JSON generator + material parameters
         latitude    REAL,
@@ -140,10 +104,11 @@ const migrations: Migration[] = [
         created_at  TEXT NOT NULL,
         updated_at  TEXT NOT NULL
       );
-      CREATE INDEX idx_designs_user ON designs(user_id, updated_at DESC);
+      CREATE INDEX idx_designs_updated ON designs(updated_at DESC);
 
-      -- A share grants read access to exactly one design and carries no user
-      -- identity, so a leaked link cannot be widened into account access.
+      -- A share link is a stable permalink to one design. With no accounts it
+      -- grants nothing a visitor could not already reach, but it stays useful
+      -- as a revocable reference to a single record.
       CREATE TABLE design_shares (
         token_hash TEXT PRIMARY KEY,
         design_id  TEXT NOT NULL REFERENCES designs(id) ON DELETE CASCADE,
@@ -151,16 +116,6 @@ const migrations: Migration[] = [
         revoked_at TEXT
       );
       CREATE INDEX idx_design_shares_design ON design_shares(design_id);
-
-      -- ---------------------------------------------------------------
-      -- auth throttling (per-account, survives restarts and IP rotation)
-      -- ---------------------------------------------------------------
-      CREATE TABLE auth_throttle (
-        key          TEXT PRIMARY KEY,   -- e.g. "login:user@example.com"
-        failures     INTEGER NOT NULL DEFAULT 0,
-        window_start TEXT NOT NULL,
-        locked_until TEXT
-      );
     `,
   },
 ];

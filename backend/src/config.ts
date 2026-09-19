@@ -4,6 +4,9 @@
  * Every secret the system holds is read here, from the process environment, on
  * the server. Nothing in this file is ever sent to, or derivable from, the
  * frontend bundle. The frontend's only configuration is the public API base URL.
+ *
+ * There are no session or cookie settings: this installation has no user
+ * accounts. The only credential it holds is the upstream map key.
  */
 import { z } from 'zod';
 
@@ -37,27 +40,12 @@ const envSchema = z.object({
     .default('http://localhost:5173,http://127.0.0.1:5173')
     .transform(csv),
 
-  /** Sliding session window. Short by design; the client refreshes silently. */
-  SESSION_TTL_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
-  /** Hard cap regardless of activity. Re-authentication required after this. */
-  SESSION_ABSOLUTE_TTL_HOURS: z.coerce.number().int().min(1).max(8760).default(168),
-
   /**
-   * Cookies are `SameSite=None; Secure` because the SPA is served from a
-   * different origin (github.io) than the API. Browsers treat `localhost` as a
-   * trustworthy origin, so `Secure` cookies are accepted over plain HTTP there
-   * and local development needs no override. These knobs exist for unusual
-   * hosting setups only.
+   * Set true only when running behind a proxy that sets X-Forwarded-For
+   * (Fly.io does). Rate limiting is keyed by IP, so getting this wrong means
+   * every request appears to come from the proxy and shares one bucket.
    */
-  COOKIE_SECURE: booleanish.default('true'),
-  COOKIE_SAMESITE: z.enum(['none', 'lax', 'strict']).default('none'),
-  COOKIE_DOMAIN: z.string().optional(),
-
-  /** Set true only when running behind a proxy that sets X-Forwarded-For (Fly.io does). */
   TRUST_PROXY: booleanish.default('false'),
-
-  /** Allows closing signups once the intended users have accounts. */
-  REGISTRATION_ENABLED: booleanish.default('true'),
 
   /** Per-device ingest ceiling. A Pico posting every 5s uses 12/min. */
   INGEST_RATE_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(120),
@@ -117,8 +105,11 @@ function load(): Config {
       // Not fatal, but it means a dev origin can drive the production API.
       console.warn('[config] ALLOWED_ORIGINS contains a localhost entry in production.');
     }
-    if (!env.COOKIE_SECURE) {
-      throw new Error('COOKIE_SECURE must be true in production.');
+    if (!env.TRUST_PROXY) {
+      console.warn(
+        '[config] TRUST_PROXY is false in production. Behind a proxy this collapses ' +
+          'every caller into one rate-limit bucket.',
+      );
     }
   }
 

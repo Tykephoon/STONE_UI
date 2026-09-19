@@ -22,14 +22,13 @@ export function searchPlaces(query: string, signal?: AbortSignal): Promise<{ res
 /**
  * MapLibre `transformRequest` hook.
  *
- * The style and its tiles are authenticated routes, so every map request needs
- * the session cookie. MapLibre issues these through its own worker-side fetch,
- * which does not inherit our client's defaults — this is where credentials get
- * attached.
+ * Nothing needs adding to a tile request now that the proxy is unauthenticated,
+ * but the hook stays as the single place to intervene if that changes — and as
+ * the place a reader looks to confirm no key is being attached.
  */
-export function transformMapRequest(url: string): { url: string; credentials: 'include' } | undefined {
+export function transformMapRequest(url: string): { url: string } | undefined {
   if (url.startsWith(config.apiBaseUrl)) {
-    return { url, credentials: 'include' };
+    return { url };
   }
   return undefined;
 }

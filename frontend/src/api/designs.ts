@@ -51,16 +51,12 @@ export function revokeShareLinks(id: string): Promise<{ revoked: number }> {
   });
 }
 
-/**
- * Fetch a shared design. Deliberately unauthenticated — a share link works for
- * a signed-out visitor, and grants nothing but this one record.
- */
+/** Fetch a shared design by token. Returns that one record and nothing else. */
 export function getSharedDesign(
   token: string,
   signal?: AbortSignal,
 ): Promise<{ design: SharedDesign }> {
   return request<{ design: SharedDesign }>(`/api/share/${encodeURIComponent(token)}`, {
-    skipRetry: true,
     ...(signal ? { signal } : {}),
   });
 }

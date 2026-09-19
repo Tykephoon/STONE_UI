@@ -1,11 +1,13 @@
 /**
  * Device telemetry ingest.
  *
- * Authenticated with a device key, not a session cookie — this endpoint is
- * called by hardware, not a browser. That also means it needs no CSRF token
- * (it is exempt in the auth plugin) because there is no ambient credential for
- * a malicious page to abuse: a browser will never attach a device key on its
- * own.
+ * This is the only write path in the system that requires a credential, and it
+ * is the reason the readings table cannot be filled with junk by a passer-by.
+ * Keys are minted offline with `npm run device -- add`; there is deliberately
+ * no HTTP route that creates one.
+ *
+ * No CSRF token is involved: a device key is not ambient authority, so a
+ * browser will never attach it on a malicious page's behalf.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
@@ -30,7 +32,6 @@ export function resetIngestLimiter(): void {
 
 interface DeviceAuthRow {
   id: string;
-  user_id: string;
   name: string;
 }
 
@@ -44,7 +45,7 @@ function readBearerToken(request: FastifyRequest): string | null {
 
 const INSERT_READING = `
   INSERT INTO readings (
-    id, device_id, user_id,
+    id, device_id,
     recorded_at, received_at, clock_skew_ms,
     latitude, longitude, altitude_m, gps_accuracy_m,
     tire_fl_pressure_kpa, tire_fl_temp_c,
@@ -55,7 +56,7 @@ const INSERT_READING = `
     accel_x_g, accel_y_g, accel_z_g, battery_voltage_v,
     extra, created_at
   ) VALUES (
-    @id, @device_id, @user_id,
+    @id, @device_id,
     @recorded_at, @received_at, @clock_skew_ms,
     @latitude, @longitude, @altitude_m, @gps_accuracy_m,
     @tire_fl_pressure_kpa, @tire_fl_temp_c,
@@ -91,7 +92,7 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const device = db
-        .prepare('SELECT id, user_id, name FROM devices WHERE key_hash = ?')
+        .prepare('SELECT id, name FROM devices WHERE key_hash = ?')
         .get(sha256(key)) as DeviceAuthRow | undefined;
 
       if (!device) {
@@ -141,7 +142,6 @@ export async function ingestRoutes(app: FastifyInstance): Promise<void> {
         rows.push({
           id,
           device_id: device.id,
-          user_id: device.user_id,
           recorded_at: reading.recordedAt,
           received_at: reading.receivedAt,
           clock_skew_ms: reading.clockSkewMs,

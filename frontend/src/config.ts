@@ -8,6 +8,9 @@
  * There is no credential in this file and there is no code path in this
  * application that reads one. Anything requiring a key is proxied by the
  * backend — see `src/api/geo.ts`.
+ *
+ * This installation has no user accounts, so there is also no session state to
+ * configure here.
  */
 
 function readApiBaseUrl(): string {
@@ -39,10 +42,4 @@ export const config = {
 
   /** How often the dashboard re-polls while "live" is on. */
   livePollIntervalMs: 15_000,
-
-  /**
-   * Silent session refresh cadence. Comfortably inside the backend's 30-minute
-   * sliding window so a rotation never races an in-flight request.
-   */
-  sessionRefreshIntervalMs: 12 * 60_000,
 } as const;

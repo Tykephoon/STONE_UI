@@ -1,28 +1,23 @@
 /**
  * Ingest authentication, validation, and immutability.
+ *
+ * The device key is the only credential left in the system, so these tests
+ * carry more weight than they did when a session also stood in the way.
  */
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, it } from 'node:test';
+import type { FastifyInstance } from 'fastify';
 import { config } from '../src/config.js';
 import { resetIngestLimiter } from '../src/routes/ingest.js';
-import {
-  type TestApp,
-  createDevice,
-  makeApp,
-  registerUser,
-  validReading,
-} from './helpers.js';
-import type { FastifyInstance } from 'fastify';
+import { type TestApp, createDevice, makeApp, validReading } from './helpers.js';
 
 const apps: TestApp[] = [];
 
 async function fixture(): Promise<{ server: FastifyInstance; deviceId: string; key: string }> {
   const instance = await makeApp();
   apps.push(instance);
-  const server = instance.app;
-  const user = await registerUser(server, `owner-${apps.length}@example.com`);
-  const device = createDevice(server, user.userId);
-  return { server, deviceId: device.id, key: device.key };
+  const device = createDevice(instance.app);
+  return { server: instance.app, deviceId: device.id, key: device.key };
 }
 
 function post(server: FastifyInstance, key: string | null, payload: unknown) {
@@ -58,43 +53,70 @@ describe('ingest authentication', () => {
     assert.equal(response.statusCode, 401);
   });
 
-  it('does not accept a session cookie in place of a device key', async () => {
-    const instance = await makeApp();
-    apps.push(instance);
-    const user = await registerUser(instance.app, 'cookie-ingest@example.com');
+  it('writes nothing when the key is rejected', async () => {
+    const { server } = await fixture();
+    await post(server, 'stk_not-a-real-key', validReading());
 
-    const response = await instance.app.inject({
-      method: 'POST',
-      url: '/api/ingest',
-      headers: { cookie: user.cookie, 'x-csrf-token': user.csrf },
-      payload: validReading(),
-    });
-
-    assert.equal(response.statusCode, 401);
+    const count = server.db.prepare('SELECT COUNT(*) AS n FROM readings').get() as { n: number };
+    assert.equal(count.n, 0);
   });
 
-  it('stops accepting a rotated key', async () => {
-    const instance = await makeApp();
-    apps.push(instance);
-    const server = instance.app;
-    const user = await registerUser(server, 'rotate-ingest@example.com');
-    const device = createDevice(server, user.userId);
+  /**
+   * The load-bearing test for this whole design. Reads are public, so the only
+   * thing stopping a stranger filling the database is that they cannot obtain a
+   * device key — which holds only while no HTTP route hands one out.
+   */
+  it('exposes no HTTP route that mints or changes a device key', async () => {
+    const { server, deviceId } = await fixture();
 
-    const before = await post(server, device.key, validReading());
+    const attempts = [
+      { method: 'POST' as const, url: '/api/devices' },
+      { method: 'POST' as const, url: `/api/devices/${deviceId}/rotate-key` },
+      { method: 'PATCH' as const, url: `/api/devices/${deviceId}` },
+      { method: 'DELETE' as const, url: `/api/devices/${deviceId}` },
+      { method: 'PUT' as const, url: `/api/devices/${deviceId}` },
+    ];
+
+    for (const attempt of attempts) {
+      const response = await server.inject({ ...attempt, payload: { name: 'Mine' } });
+      assert.equal(
+        response.statusCode,
+        404,
+        `${attempt.method} ${attempt.url} must not be routed`,
+      );
+    }
+
+    const count = server.db.prepare('SELECT COUNT(*) AS n FROM devices').get() as { n: number };
+    assert.equal(count.n, 1, 'no device was created or removed');
+  });
+
+  it('never returns a device key from a read route', async () => {
+    const { server, deviceId, key } = await fixture();
+
+    for (const url of ['/api/devices', `/api/devices/${deviceId}`]) {
+      const response = await server.inject({ method: 'GET', url });
+      assert.equal(response.statusCode, 200);
+      assert.ok(!response.body.includes(key), `${url} leaked the plaintext key`);
+      assert.ok(!response.body.includes('key_hash'), `${url} leaked the key hash`);
+    }
+  });
+
+  it('stops accepting a key once it is rotated in the database', async () => {
+    const { server, deviceId, key } = await fixture();
+
+    const before = await post(server, key, validReading());
     assert.equal(before.statusCode, 201);
 
-    await server.inject({
-      method: 'POST',
-      url: `/api/devices/${device.id}/rotate-key`,
-      headers: {
-        cookie: user.cookie,
-        'x-csrf-token': user.csrf,
-        origin: 'http://localhost:5173',
-      },
-    });
+    // Equivalent to `npm run device -- rotate`: overwrite the stored hash.
+    const replacement = createDevice(server, 'scratch');
+    const { key_hash: newHash } = server.db
+      .prepare('SELECT key_hash FROM devices WHERE id = ?')
+      .get(replacement.id) as { key_hash: string };
+    server.db.prepare('DELETE FROM devices WHERE id = ?').run(replacement.id);
+    server.db.prepare('UPDATE devices SET key_hash = ? WHERE id = ?').run(newHash, deviceId);
 
-    const after_ = await post(server, device.key, validReading());
-    assert.equal(after_.statusCode, 401, 'the superseded key is dead immediately');
+    const afterRotation = await post(server, key, validReading());
+    assert.equal(afterRotation.statusCode, 401, 'the superseded key is dead immediately');
   });
 });
 
@@ -123,7 +145,6 @@ describe('ingest validation', () => {
 
   it('records both clocks and the skew between them', async () => {
     const { server, key } = await fixture();
-    // A device whose clock is two minutes behind the server.
     const recordedAt = new Date(Date.now() - 120_000).toISOString();
 
     const response = await post(server, key, validReading({ recorded_at: recordedAt }));
@@ -185,8 +206,6 @@ describe('ingest validation', () => {
 
   it('rejects a tyre pressure sent in psi instead of kPa', async () => {
     const { server, key } = await fixture();
-    // 2200 psi is nonsense; the bound catches a unit mix-up rather than
-    // silently storing it.
     const payload = validReading();
     (payload.tires as Record<string, unknown>).front_left = { pressure_kpa: 2200, temp_c: 20 };
 
@@ -247,7 +266,6 @@ describe('unknown fields', () => {
     assert.equal(extra.firmware, '2.0.1');
     assert.equal(extra.rssi_dbm, -58);
     assert.deepEqual(extra.experimental, { lidar_cm: 412, tags: ['a', 'b'] });
-    // Recognised fields must not be duplicated into extra.
     assert.ok(!('latitude' in extra));
     assert.ok(!('tires' in extra));
   });
@@ -263,24 +281,19 @@ describe('unknown fields', () => {
     assert.equal(row.extra, '{}');
   });
 
-  it('returns the extras as text, never as executable markup', async () => {
+  it('round-trips markup in extras as an inert string', async () => {
     const { server, key } = await fixture();
     const injection = '<img src=x onerror="alert(1)">';
 
     await post(server, key, validReading({ label: injection }));
 
-    const response = await server.inject({
-      method: 'GET',
-      url: '/api/readings',
-      headers: { cookie: (await registerUser(server, 'reader@example.com')).cookie },
-    });
+    const response = await server.inject({ method: 'GET', url: '/api/readings' });
+    const reading = response.json().readings[0];
 
-    // The reader is a different user, so they see nothing — and the stored
-    // value round-trips as a plain string for the owner, which React escapes.
-    assert.equal(response.json().page.total, 0);
-
-    const row = server.db.prepare('SELECT extra FROM readings LIMIT 1').get() as { extra: string };
-    assert.equal(JSON.parse(row.extra).label, injection);
+    // The API stores and returns it verbatim as a JSON string; the client makes
+    // it inert by rendering it as a React text node and never as markup.
+    assert.equal(typeof reading.extra.label, 'string');
+    assert.equal(reading.extra.label, injection);
   });
 });
 
@@ -325,10 +338,10 @@ describe('batching', () => {
 
     await post(server, key, validReading());
 
-    const after_ = server.db
+    const afterPost = server.db
       .prepare('SELECT last_seen_at FROM devices WHERE id = ?')
       .get(deviceId) as { last_seen_at: string | null };
-    assert.ok(after_.last_seen_at);
+    assert.ok(afterPost.last_seen_at);
   });
 });
 
@@ -353,9 +366,8 @@ describe('rate limiting', () => {
     const instance = await makeApp();
     apps.push(instance);
     const server = instance.app;
-    const user = await registerUser(server, 'two-devices@example.com');
-    const first = createDevice(server, user.userId, 'First');
-    const second = createDevice(server, user.userId, 'Second');
+    const first = createDevice(server, 'First');
+    const second = createDevice(server, 'Second');
 
     for (let attempt = 0; attempt <= config.INGEST_RATE_PER_MINUTE; attempt += 1) {
       const response = await post(server, first.key, validReading());
@@ -387,27 +399,22 @@ describe('immutability', () => {
     assert.equal(row.latitude, 42.3398);
   });
 
-  it('exposes no endpoint that mutates a reading', async () => {
+  it('exposes no endpoint that mutates or deletes a reading', async () => {
     const { server, key } = await fixture();
     const created = await post(server, key, validReading());
     const id = created.json().ids[0];
-
-    const instance = apps[apps.length - 1]!;
-    const user = await registerUser(instance.app, 'mutator@example.com');
 
     for (const method of ['PUT', 'PATCH', 'DELETE'] as const) {
       const response = await server.inject({
         method,
         url: `/api/readings/${id}`,
-        headers: {
-          cookie: user.cookie,
-          'x-csrf-token': user.csrf,
-          origin: 'http://localhost:5173',
-        },
         payload: { latitude: 0 },
       });
 
       assert.equal(response.statusCode, 404, `${method} /api/readings/:id is not routed`);
     }
+
+    const count = server.db.prepare('SELECT COUNT(*) AS n FROM readings').get() as { n: number };
+    assert.equal(count.n, 1);
   });
 });

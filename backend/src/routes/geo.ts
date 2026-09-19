@@ -7,11 +7,17 @@
  *
  * Three properties stop this becoming an open relay:
  *
- *   1. A live session is required. Anonymous callers get nothing.
- *   2. Per-user rate limits, separate from the global IP limiter.
- *   3. The upstream URL is built from a server-side template with numerically
+ *   1. Per-IP rate limits, separate from the global limiter, so one caller
+ *      cannot pull tiles on our quota indefinitely.
+ *   2. The upstream URL is built from a server-side template with numerically
  *      validated tile coordinates. No part of the caller's input is ever
  *      treated as a URL, so the proxy cannot be pointed at an arbitrary host.
+ *   3. Only image and vector-tile content types are forwarded, and geocoder
+ *      output is reshaped rather than passed through.
+ *
+ * With no user accounts these routes are public, so the rate limits are the
+ * only thing standing between the deployment and someone else's bandwidth
+ * bill. Keep them tight, and prefer a provider key with a hard quota.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -74,8 +80,6 @@ export async function geoRoutes(app: FastifyInstance): Promise<void> {
    * it.
    */
   app.get('/api/geo/style.json', async (request) => {
-    app.requireUser(request);
-
     const origin = `${request.protocol}://${request.headers.host ?? ''}`;
 
     return {
@@ -116,9 +120,8 @@ export async function geoRoutes(app: FastifyInstance): Promise<void> {
     '/api/geo/tiles/:z/:x/:y',
     { config: { rateLimit: false } },
     async (request, reply) => {
-      app.requireUser(request);
-
-      const limit = tileLimiter.check(request.auth.user.id);
+      // Keyed by IP: there is no user to key on.
+      const limit = tileLimiter.check(request.ip);
       if (!limit.allowed) {
         reply.header('retry-after', String(limit.retryAfterSeconds));
         throw rateLimited('Map is loading too quickly. Pause a moment.');
@@ -171,9 +174,10 @@ export async function geoRoutes(app: FastifyInstance): Promise<void> {
       const body = Buffer.from(await upstream.arrayBuffer());
 
       reply.header('content-type', contentType);
-      // Tiles are immutable for a given z/x/y. Private, because the route is
-      // authenticated and a shared cache must not serve it to another user.
-      reply.header('cache-control', 'private, max-age=86400');
+      // Tiles are immutable for a given z/x/y and identical for every caller,
+      // so a shared cache in front of this route is a straight win: fewer
+      // requests against the upstream provider's quota.
+      reply.header('cache-control', 'public, max-age=86400');
       return reply.send(body);
     },
   );
@@ -186,9 +190,7 @@ export async function geoRoutes(app: FastifyInstance): Promise<void> {
    * anything resembling a quota identifier — into the client.
    */
   app.get('/api/geo/search', { config: { rateLimit: false } }, async (request, reply) => {
-    app.requireUser(request);
-
-    const limit = searchLimiter.check(request.auth.user.id);
+    const limit = searchLimiter.check(request.ip);
     if (!limit.allowed) {
       reply.header('retry-after', String(limit.retryAfterSeconds));
       throw rateLimited('Too many searches. Try again in a moment.');

@@ -29,67 +29,14 @@ export async function makeApp(): Promise<TestApp> {
   };
 }
 
-export interface Session {
-  cookie: string;
-  csrf: string;
-  userId: string;
-  email: string;
-}
-
-/** Collapse a Fastify inject response's Set-Cookie headers into a request header. */
-export function cookieHeader(response: { cookies: unknown[] }): string {
-  return (response.cookies as { name: string; value: string }[])
-    .filter((entry) => entry.value !== '')
-    .map((entry) => `${entry.name}=${entry.value}`)
-    .join('; ');
-}
-
-export function cookieValue(response: { cookies: unknown[] }, name: string) {
-  return (response.cookies as { name: string; value: string; [key: string]: unknown }[]).find(
-    (entry) => entry.name === name,
-  );
-}
-
-export const TEST_PASSWORD = 'a-sufficiently-long-password';
-
-export async function registerUser(
-  app: FastifyInstance,
-  email: string,
-  password: string = TEST_PASSWORD,
-): Promise<Session> {
-  const response = await app.inject({
-    method: 'POST',
-    url: '/api/auth/register',
-    payload: { email, password },
-  });
-
-  if (response.statusCode !== 201) {
-    throw new Error(`register failed (${response.statusCode}): ${response.body}`);
-  }
-
-  const body = response.json() as { user: { id: string }; csrf_token: string };
-
-  return {
-    cookie: cookieHeader(response),
-    csrf: body.csrf_token,
-    userId: body.user.id,
-    email,
-  };
-}
-
-/** Headers for an authenticated, state-changing request. */
-export function authHeaders(session: Session): Record<string, string> {
-  return {
-    cookie: session.cookie,
-    'x-csrf-token': session.csrf,
-    origin: 'http://localhost:5173',
-  };
-}
-
-/** Insert a device directly and return its plaintext key. */
+/**
+ * Insert a device directly and return its plaintext key.
+ *
+ * Mirrors what `npm run device -- add` does. There is no HTTP route for this by
+ * design, so tests go straight to the database as the CLI would.
+ */
 export function createDevice(
   app: FastifyInstance,
-  userId: string,
   name = 'Test Pico',
 ): { id: string; key: string } {
   const id = newId('dev');
@@ -98,10 +45,10 @@ export function createDevice(
 
   app.db
     .prepare(
-      `INSERT INTO devices (id, user_id, name, key_hash, key_prefix, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO devices (id, name, key_hash, key_prefix, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(id, userId, name, sha256(key), `stk_${secret.slice(0, 6)}`, new Date().toISOString());
+    .run(id, name, sha256(key), `stk_${secret.slice(0, 6)}`, new Date().toISOString());
 
   return { id, key };
 }
@@ -132,3 +79,24 @@ export function validReading(overrides: Record<string, unknown> = {}): Record<st
     ...overrides,
   };
 }
+
+/** Valid design parameters, matching the studio's defaults. */
+export function validDesignParams(): Record<string, unknown> {
+  return {
+    seed: '42.33980,-71.08920',
+    dimensions: { length_mm: 220, width_mm: 160, height_mm: 120 },
+    form: { roundness: 0.55, taper: 0, asymmetry: 0.35, flatten: 0.2, bulge: 0.3 },
+    surface: { detail: 0.55, grain: 0.45, erosion: 0.3, faceting: 0, resolution: 5 },
+    material: {
+      color: '#8a8577',
+      accentColor: '#5c5850',
+      roughness: 0.88,
+      metalness: 0.03,
+      speckle: 0.35,
+      clearcoat: 0,
+    },
+  };
+}
+
+/** Headers a browser would send from the allowlisted origin. */
+export const BROWSER_HEADERS = { origin: 'http://localhost:5173' };

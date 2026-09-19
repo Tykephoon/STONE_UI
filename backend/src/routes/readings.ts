@@ -1,9 +1,10 @@
 /**
  * Reading queries: list, detail, aggregate statistics, time series, export.
  *
- * Every statement in this file filters on `user_id`. Column and metric names
- * that reach SQL come from allowlists, never from request strings, because
- * identifiers cannot be parameterised.
+ * This installation has no user accounts, so these are unauthenticated reads
+ * over the whole dataset. Column and metric names that reach SQL still come
+ * from allowlists, never from request strings, because identifiers cannot be
+ * parameterised and that is a SQL-injection concern independent of auth.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -122,17 +123,21 @@ const BUCKET_FORMAT: Record<'minute' | 'hour' | 'day', string> = {
 };
 
 interface Filters {
-  userId: string;
   deviceId?: string | undefined;
   from?: string | undefined;
   to?: string | undefined;
   q?: string | undefined;
 }
 
-/** Builds the shared WHERE fragment. `user_id` is always the first condition. */
+/**
+ * Builds the shared WHERE fragment.
+ *
+ * `1 = 1` is the base so every optional condition can append with AND without
+ * the caller tracking whether it is first.
+ */
 function buildWhere(filters: Filters): { clause: string; params: unknown[] } {
-  const conditions = ['r.user_id = ?'];
-  const params: unknown[] = [filters.userId];
+  const conditions = ['1 = 1'];
+  const params: unknown[] = [];
 
   if (filters.deviceId) {
     conditions.push('r.device_id = ?');
@@ -223,11 +228,9 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
   const db = app.db;
 
   app.get('/api/readings', async (request) => {
-    app.requireUser(request);
     const query = parseOrThrow(listQuerySchema, request.query);
 
     const { clause, params } = buildWhere({
-      userId: request.auth.user.id,
       deviceId: query.device_id,
       from: query.from,
       to: query.to,
@@ -272,11 +275,9 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
    * literal path is not captured by the parameterised route.
    */
   app.get('/api/readings/stats', async (request) => {
-    app.requireUser(request);
     const query = parseOrThrow(statsQuerySchema, request.query);
 
     const { clause, params } = buildWhere({
-      userId: request.auth.user.id,
       deviceId: query.device_id,
       from: query.from,
       to: query.to,
@@ -329,11 +330,9 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
 
   /** Bucketed series for charts. */
   app.get('/api/readings/series', async (request) => {
-    app.requireUser(request);
     const query = parseOrThrow(seriesQuerySchema, request.query);
 
     const { clause, params } = buildWhere({
-      userId: request.auth.user.id,
       deviceId: query.device_id,
       from: query.from,
       to: query.to,
@@ -380,7 +379,6 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
 
   /** CSV or JSON export of the current filter selection. */
   app.get('/api/readings/export', async (request, reply) => {
-    app.requireUser(request);
     const query = parseOrThrow(
       statsQuerySchema.extend({
         format: z.enum(['csv', 'json']).default('csv'),
@@ -390,7 +388,6 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
     );
 
     const { clause, params } = buildWhere({
-      userId: request.auth.user.id,
       deviceId: query.device_id,
       from: query.from,
       to: query.to,
@@ -466,7 +463,6 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/readings/:id', async (request) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(z.object({ id: z.string().min(1).max(64) }).strict(), request.params);
 
     const row = db
@@ -474,9 +470,9 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
         `SELECT ${SELECT_COLUMNS}
            FROM readings r
            JOIN devices d ON d.id = r.device_id
-          WHERE r.id = ? AND r.user_id = ?`,
+          WHERE r.id = ?`,
       )
-      .get(id, request.auth.user.id) as ReadingRow | undefined;
+      .get(id) as ReadingRow | undefined;
 
     if (!row) throw notFound('Reading not found.');
 
@@ -485,20 +481,16 @@ export async function readingRoutes(app: FastifyInstance): Promise<void> {
       .prepare(
         `SELECT
            (SELECT r2.id FROM readings r2
-             WHERE r2.user_id = ? AND r2.device_id = ? AND r2.recorded_at > ?
+             WHERE r2.device_id = ? AND r2.recorded_at > ?
              ORDER BY r2.recorded_at ASC LIMIT 1) AS newer_id,
            (SELECT r3.id FROM readings r3
-             WHERE r3.user_id = ? AND r3.device_id = ? AND r3.recorded_at < ?
+             WHERE r3.device_id = ? AND r3.recorded_at < ?
              ORDER BY r3.recorded_at DESC LIMIT 1) AS older_id`,
       )
-      .get(
-        request.auth.user.id,
-        row.device_id,
-        row.recorded_at,
-        request.auth.user.id,
-        row.device_id,
-        row.recorded_at,
-      ) as { newer_id: string | null; older_id: string | null };
+      .get(row.device_id, row.recorded_at, row.device_id, row.recorded_at) as {
+      newer_id: string | null;
+      older_id: string | null;
+    };
 
     return { reading: serialiseReading(row), neighbours };
   });

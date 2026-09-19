@@ -18,8 +18,6 @@ primary_region = "bos"
   # Must live on the mounted volume so data survives a redeploy.
   DATABASE_PATH = "/data/stone.sqlite"
   TRUST_PROXY = "true"
-  COOKIE_SECURE = "true"
-  COOKIE_SAMESITE = "none"
   # Replace with your Pages origin before the first deploy.
   ALLOWED_ORIGINS = "https://tykephoon.github.io"
 

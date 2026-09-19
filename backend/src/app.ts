@@ -4,8 +4,11 @@
  * Exported separately from the server bootstrap so tests can build an app
  * against an in-memory database and drive it with `app.inject()` — no ports, no
  * HTTP client, no teardown races.
+ *
+ * This installation has no user accounts. Read endpoints are public; the only
+ * credentialed route is `/api/ingest`, which authenticates the posting device.
+ * See SECURITY.md for what that model does and does not protect.
  */
-import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
@@ -13,14 +16,17 @@ import { ZodError } from 'zod';
 import { config } from './config.js';
 import type { Database } from './db/index.js';
 import { ApiError, internalError } from './lib/errors.js';
-import { purgeExpiredSessions } from './lib/sessions.js';
-import { registerAuth } from './plugins/auth.js';
-import { authRoutes } from './routes/auth.js';
 import { designRoutes } from './routes/designs.js';
 import { deviceRoutes } from './routes/devices.js';
 import { geoRoutes } from './routes/geo.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { readingRoutes } from './routes/readings.js';
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    db: Database;
+  }
+}
 
 export interface BuildOptions {
   readonly db: Database;
@@ -44,9 +50,11 @@ export async function buildApp({
   /**
    * CORS.
    *
-   * An explicit allowlist, never a wildcard — and a wildcard would be rejected
-   * by the browser anyway once credentials are involved. An unknown origin gets
-   * no CORS headers, so the browser blocks the response.
+   * An explicit allowlist even though no credentials are involved: it keeps the
+   * API from being trivially embedded in someone else's page, and it means
+   * turning authentication back on later does not require revisiting this.
+   *
+   * `credentials` is off because nothing sends a cookie any more.
    */
   await app.register(cors, {
     origin(origin, callback) {
@@ -57,25 +65,24 @@ export async function buildApp({
       }
       callback(null, config.ALLOWED_ORIGINS.includes(origin));
     },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'x-csrf-token', 'authorization'],
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['content-type', 'authorization'],
     exposedHeaders: ['retry-after'],
     maxAge: 600,
   });
 
-  await app.register(cookie, {});
-
   /**
-   * Global limiter, keyed by user when there is one so that several people
-   * behind one NAT do not exhaust a shared budget. Routes with their own
-   * per-resource limits opt out via `config.rateLimit: false`.
+   * Global limiter, keyed by IP.
+   *
+   * With no accounts this is the main backstop on write abuse against the
+   * design library, so it is deliberately not generous.
    */
   await app.register(rateLimit, {
     global: true,
     max: 300,
     timeWindow: '1 minute',
-    keyGenerator: (request) => request.auth?.user.id ?? request.ip,
+    keyGenerator: (request) => request.ip,
     errorResponseBuilder: () => ({
       error: { code: 'rate_limited', message: 'Too many requests. Try again shortly.' },
     }),
@@ -174,34 +181,18 @@ export async function buildApp({
     },
   );
 
-  registerAuth(app, db);
+  app.decorate('db', db);
 
   app.get('/health', { config: { rateLimit: false } }, async () => ({
     status: 'ok',
     time: new Date().toISOString(),
   }));
 
-  await app.register(authRoutes);
   await app.register(deviceRoutes);
   await app.register(readingRoutes);
   await app.register(ingestRoutes);
   await app.register(designRoutes);
   await app.register(geoRoutes);
-
-  // Housekeeping: drop expired session rows hourly. Unref'd so it never holds
-  // the process open during a shutdown or a test run.
-  const purgeTimer = setInterval(() => {
-    try {
-      purgeExpiredSessions(db);
-    } catch (cause) {
-      app.log.warn({ err: cause }, 'session purge failed');
-    }
-  }, 3_600_000);
-  purgeTimer.unref();
-
-  app.addHook('onClose', async () => {
-    clearInterval(purgeTimer);
-  });
 
   return app;
 }

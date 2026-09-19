@@ -8,18 +8,17 @@
  * cycle, and the battery discharges and recharges across a trip. Random noise
  * alone produces charts that look wrong to anyone who has seen real telemetry.
  *
- * Usage:  npm run seed -- --email you@example.com --password 'correct horse battery staple'
+ * Usage:  npm run seed -- --days 21 --reset
  */
 import { parseArgs } from 'node:util';
 import { openDatabase } from '../db/index.js';
-import { hashPassword, sha256 } from '../lib/crypto.js';
+import { sha256 } from '../lib/crypto.js';
 import { newId, newSecret } from '../lib/ids.js';
 
 const { values } = parseArgs({
   options: {
-    email: { type: 'string', default: 'demo@stone.local' },
-    password: { type: 'string' },
     days: { type: 'string', default: '21' },
+    /** Removes any previously seeded devices (and their readings) first. */
     reset: { type: 'boolean', default: false },
   },
   allowPositionals: true,
@@ -128,52 +127,44 @@ const PROFILES: DeviceProfile[] = [
   },
 ];
 
-async function main(): Promise<void> {
+function main(): void {
   const db = openDatabase();
-  const email = values.email!.trim().toLowerCase();
-  const password = values.password ?? `demo-${newSecret(9)}`;
   const days = Math.max(1, Math.min(120, Number.parseInt(values.days!, 10) || 21));
 
-  if (values.reset) {
-    // Removing the user cascades to devices, readings, designs, and sessions.
-    db.prepare('DELETE FROM users WHERE email = ?').run(email);
-    console.log(`Removed any existing account for ${email}.`);
-  }
+  const existing = db
+    .prepare("SELECT COUNT(*) AS n FROM devices WHERE name LIKE 'Pico-0%'")
+    .get() as { n: number };
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email) as
-    | { id: string }
-    | undefined;
-
-  if (existing) {
+  if (existing.n > 0 && !values.reset) {
     console.error(
-      `An account for ${email} already exists. Re-run with --reset to replace it, ` +
-        'or pass a different --email.',
+      '\n  Seed devices already exist. Re-run with --reset to replace them,\n' +
+        '  or use `npm run device -- add` to register a real device instead.\n',
     );
     db.close();
     process.exitCode = 1;
     return;
   }
 
+  if (values.reset) {
+    // Readings cascade with their device.
+    const removed = db.prepare("DELETE FROM devices WHERE name LIKE 'Pico-0%'").run();
+    if (removed.changes > 0) {
+      console.log(`Removed ${removed.changes} previously seeded device(s).`);
+    }
+  }
+
   const now = new Date();
-  const userId = newId('usr');
-
-  const passwordHash = await hashPassword(password);
-
-  db.prepare(
-    `INSERT INTO users (id, email, email_display, password_hash, display_name, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(userId, email, values.email!, passwordHash, 'Demo Operator', now.toISOString(), now.toISOString());
 
   const insertReading = db.prepare(`
     INSERT INTO readings (
-      id, device_id, user_id, recorded_at, received_at, clock_skew_ms,
+      id, device_id, recorded_at, received_at, clock_skew_ms,
       latitude, longitude, altitude_m, gps_accuracy_m,
       tire_fl_pressure_kpa, tire_fl_temp_c, tire_fr_pressure_kpa, tire_fr_temp_c,
       tire_rl_pressure_kpa, tire_rl_temp_c, tire_rr_pressure_kpa, tire_rr_temp_c,
       ambient_temp_c, humidity_pct, barometric_pressure_hpa,
       accel_x_g, accel_y_g, accel_z_g, battery_voltage_v, extra, created_at
     ) VALUES (
-      @id, @device_id, @user_id, @recorded_at, @received_at, @clock_skew_ms,
+      @id, @device_id, @recorded_at, @received_at, @clock_skew_ms,
       @latitude, @longitude, @altitude_m, @gps_accuracy_m,
       @tire_fl_pressure_kpa, @tire_fl_temp_c, @tire_fr_pressure_kpa, @tire_fr_temp_c,
       @tire_rl_pressure_kpa, @tire_rl_temp_c, @tire_rr_pressure_kpa, @tire_rr_temp_c,
@@ -191,11 +182,10 @@ async function main(): Promise<void> {
       const key = `stk_${secret}`;
 
       db.prepare(
-        `INSERT INTO devices (id, user_id, name, key_hash, key_prefix, notes, created_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO devices (id, name, key_hash, key_prefix, notes, created_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         deviceId,
-        userId,
         profile.name,
         sha256(key),
         `stk_${secret.slice(0, 6)}`,
@@ -204,7 +194,7 @@ async function main(): Promise<void> {
         now.toISOString(),
       );
 
-      const rows = buildReadings(profile, deviceId, userId, now, days);
+      const rows = buildReadings(profile, deviceId, now, days);
       for (const row of rows) insertReading.run(row);
 
       summaries.push({ name: profile.name, key, readings: rows.length });
@@ -215,8 +205,6 @@ async function main(): Promise<void> {
   db.close();
 
   console.log('\n  Seed complete.\n');
-  console.log(`  Email     ${values.email}`);
-  console.log(`  Password  ${password}`);
   console.log(`  Window    ${days} days\n`);
   for (const summary of summaries) {
     console.log(`  ${summary.name}`);
@@ -229,7 +217,6 @@ async function main(): Promise<void> {
 function buildReadings(
   profile: DeviceProfile,
   deviceId: string,
-  userId: string,
   now: Date,
   days: number,
 ): Record<string, unknown>[] {
@@ -293,7 +280,6 @@ function buildReadings(
     rows.push({
       id: newId('rdg'),
       device_id: deviceId,
-      user_id: userId,
       recorded_at: recordedAt.toISOString(),
       received_at: receivedAt.toISOString(),
       clock_skew_ms: receivedAt.getTime() - recordedAt.getTime(),
@@ -319,7 +305,9 @@ function buildReadings(
   return rows;
 }
 
-main().catch((cause) => {
+try {
+  main();
+} catch (cause) {
   console.error('Seed failed:', cause);
   process.exit(1);
-});
+}

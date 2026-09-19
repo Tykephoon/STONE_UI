@@ -114,48 +114,6 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.account {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-2);
-  min-width: 0;
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  border-radius: var(--radius-full);
-  background: var(--accent-subtle);
-  border: 1px solid var(--accent-border);
-  color: var(--accent);
-  font-size: var(--text-sm);
-  font-weight: 600;
-}
-
-.accountText {
-  min-width: 0;
-}
-
-.accountName {
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.accountEmail {
-  font-size: var(--text-2xs);
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .envLabel {
   padding: 0 var(--space-2);
   font-size: var(--text-2xs);

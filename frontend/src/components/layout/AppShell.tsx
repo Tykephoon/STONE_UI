@@ -5,21 +5,11 @@
  * navigation and on Escape, and the trigger returns focus to itself, so the
  * pattern works from a keyboard as well as a touchscreen.
  */
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { useAuth } from '../../auth/AuthContext';
 import { config } from '../../config';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
-import { Button } from '../ui/Button';
-import { useToast } from '../ui/Toast';
-import {
-  ChipIcon,
-  CubeIcon,
-  GaugeIcon,
-  ListIcon,
-  MenuIcon,
-  SignOutIcon,
-} from './Icons';
+import { ChipIcon, CubeIcon, GaugeIcon, ListIcon, MenuIcon } from './Icons';
 import { Logo } from './Logo';
 import styles from './AppShell.module.css';
 
@@ -39,8 +29,6 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function AppShell(): JSX.Element {
-  const { user, signOut } = useAuth();
-  const toast = useToast();
   const location = useLocation();
   const isNarrow = useMediaQuery('(max-width: 900px)');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -62,11 +50,6 @@ export function AppShell(): JSX.Element {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [drawerOpen]);
-
-  const handleSignOut = useCallback(async () => {
-    await signOut();
-    toast.success('Signed out', 'Your session was ended on the server.');
-  }, [signOut, toast]);
 
   return (
     <div className={styles.shell}>
@@ -111,31 +94,9 @@ export function AppShell(): JSX.Element {
         </nav>
 
         <div className={styles.sidebarFooter}>
-          <div className={styles.account}>
-            <span className={styles.avatar} aria-hidden="true">
-              {(user?.display_name ?? user?.email ?? '?').charAt(0).toUpperCase()}
-            </span>
-            <div className={styles.accountText}>
-              <p className={styles.accountName}>{user?.display_name ?? 'Signed in'}</p>
-              <p className={styles.accountEmail}>{user?.email}</p>
-            </div>
-          </div>
-
-          <Button
-            variant="ghost"
-            size="sm"
-            fullWidth
-            onClick={handleSignOut}
-            iconLeft={<SignOutIcon size={15} />}
-          >
-            Sign out
-          </Button>
-
-          {config.environmentLabel && (
-            <p className={styles.envLabel}>
-              {config.environmentLabel} · v{config.version}
-            </p>
-          )}
+          <p className={styles.envLabel}>
+            {config.environmentLabel ? `${config.environmentLabel} · ` : ''}v{config.version}
+          </p>
         </div>
       </aside>
 

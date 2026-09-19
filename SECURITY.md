@@ -1,173 +1,158 @@
 # Security
 
-## Where secrets live
+## Read this first: what this deployment exposes
 
-**Every secret lives in the backend process environment. There are none
-anywhere else.**
+**This installation has no user accounts.** That is a deliberate choice, and it
+has consequences worth stating plainly rather than burying:
+
+- **Anyone who knows the API URL can read every reading you have collected** —
+  timestamps, sensor values, and **the GPS coordinates of every reading**.
+- **Anyone can create, edit, and delete saved 3D designs.** The design library
+  is shared and writable.
+- **A private GitHub repository does not change any of this.** It hides the
+  source, not the deployed site, and not the API — which is a separate
+  deployment on a different host. On a Free plan, making the repo private
+  disables GitHub Pages entirely; on a paid plan the site is published and
+  world-readable regardless.
+
+If the location history in your telemetry is sensitive — and location history
+usually is — this model is the wrong one. Restoring authentication is the fix;
+see *Putting auth back* at the end.
+
+### What is still protected
+
+- **Writing readings requires a device key.** Nobody can inject fake telemetry
+  into your database without one.
+- **No credential ships in the browser bundle.** Map and geocoding keys stay on
+  the server.
+- **Readings cannot be altered or deleted through the API by anyone.**
+
+---
+
+## Where secrets live
 
 | Secret | Where it is set | Reaches the browser? |
 |---|---|---|
 | `MAP_TILES_KEY` | `fly secrets set` → backend env | No — substituted server-side |
 | `GEOCODE_KEY` | `fly secrets set` → backend env | No — substituted server-side |
-| Password hashes | `users.password_hash` (Argon2id) | No |
-| Session tokens | Only the SHA-256 is stored; the token is in an httpOnly cookie | Only as a cookie script cannot read |
-| Device keys | Only the SHA-256 is stored | Shown once at creation, never again |
+| Device keys | Only the SHA-256 is stored in the database | Shown once by the CLI, never by the API |
 | Share tokens | Only the SHA-256 is stored | Returned once when minted |
 
 The frontend bundle carries exactly two values: the public API base URL and a
 cosmetic environment label. Both are `VITE_*` variables, both are inlined as
 literal strings, and both are public by design.
 
-### Why there is no key in the browser
+There is **no password hashing, no session store, and no cookie** anywhere in
+this codebase. The API sets no `Set-Cookie` header on any response.
 
-Map tiles and geocoding are keyed services, so the naive implementation puts a
-key in the client. This project does not:
+### Why there is no map key in the browser
+
+Tiles and geocoding are keyed services, so the naive implementation puts a key
+in the client. This project does not:
 
 - `GET /api/geo/style.json` — a MapLibre style whose tile URLs point back at us
 - `GET /api/geo/tiles/:z/:x/:y` — server-side fetch to the upstream provider
   with the key from the environment, streamed back
 - `GET /api/geo/search?q=` — proxied geocoding, reshaped into a fixed structure
 
-MapLibre reaches these through `transformRequest`, which attaches
-`credentials: 'include'`, so they are authenticated like any other endpoint.
-
 If a future feature genuinely cannot avoid a browser-side map SDK key, treat it
-as public: restrict it by HTTP referrer to the Pages origin, enable only the
-specific APIs in use, set hard daily quotas and billing alerts, and document it
-in the README as exposed by design. Never use a server-side or unrestricted key
-that way. No such key exists in this project today.
+as public: restrict by HTTP referrer to the Pages origin, enable only the APIs
+in use, set hard daily quotas and billing alerts, and document it in the README
+as exposed by design. Never use a server-side or unrestricted key that way. No
+such key exists in this project today.
 
 ---
 
-## How the proxy routes are protected
+## The device key is the whole write-side security model
 
-Three properties stop `/api/geo/*` from becoming an open relay:
+Reads are public, so the only thing standing between a stranger and your
+readings table is that they cannot obtain a device key. Two properties keep
+that true:
 
-1. **Authentication.** `requireUser` runs first. Anonymous callers get `401`.
-2. **Per-user rate limits**, independent of the global IP limiter — 600
-   tiles/min and 30 searches/min by default (`GEO_TILE_RATE_PER_MINUTE`,
-   `GEO_SEARCH_RATE_PER_MINUTE`).
-3. **No caller-controlled URL.** The upstream URL is built from a server-side
-   template. `z`, `x`, and `y` are parsed as integers and range-checked against
-   the tile pyramid (`x, y < 2^z`), and the search term is URL-encoded into a
-   `{q}` placeholder. No part of a request is ever treated as a URL, so the
-   proxy cannot be pointed at an arbitrary host.
+1. **There is no HTTP route that creates, rotates, or deletes a device.** Not a
+   protected one — none at all. `POST /api/devices` returns 404 because no such
+   route is registered. Provisioning is a local command:
 
-Additionally, upstream responses are validated before being forwarded: a tile
-must carry an image or vector-tile content type, and geocoder output is
-reshaped into a fixed `{label, latitude, longitude, kind}` structure rather
-than passed through, so provider metadata cannot leak into the client. Tile
-responses are `Cache-Control: private` — the route is authenticated and a
-shared cache must not serve one user's tile to another.
+   ```bash
+   npm run device -- add "Pico-01 · Trail Rig"
+   npm run device -- rotate dev_xxxxxxxxxxxxxxxxxx
+   npm run device -- remove dev_xxxxxxxxxxxxxxxxxx
+   ```
 
----
+   Minting a key therefore requires access to the server or its volume, not
+   merely access to the API. On Fly.io:
 
-## Session handling
+   ```bash
+   fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
+   ```
 
-- **Transport.** Opaque 256-bit token in a cookie: `HttpOnly; Secure;
-  SameSite=None; Path=/`. Never in `localStorage` or `sessionStorage`, so an
-  injected script has nothing to read.
-- **Storage.** Only `sha256(token)` is persisted. A database leak yields no
-  usable sessions.
-- **Lifetime.** 30-minute sliding window inside a 7-day absolute cap that is
-  never extended. The SPA refreshes silently every 12 minutes and reactively
-  once on a `401`.
-- **Rotation.** `POST /api/auth/refresh` issues a new token and retires the old
-  one, bounding the useful life of a stolen token.
-- **Logout.** Deletes the session row. Clearing the cookie is incidental — the
-  invalidation is the delete, so a captured cookie is dead immediately.
-  `POST /api/auth/logout-all` revokes every session for the account.
+2. **Keys are 256-bit CSPRNG output, stored only as SHA-256.** A database leak
+   yields no usable keys, and a lost key is rotated rather than recovered.
 
-### CSRF
+`backend/test/ingest.test.ts` asserts property 1 directly: it attempts `POST`,
+`PATCH`, `DELETE`, and `PUT` against the device routes and requires a 404 from
+each. If someone later adds a provisioning endpoint, that test fails.
 
-Cookies are sent cross-site automatically because `SameSite=None` is required
-for a `github.io` frontend talking to an API on another domain. Two independent
-checks guard every state-changing request:
-
-1. **Synchroniser token.** A non-httpOnly `stone_csrf` cookie is mirrored into
-   an `X-CSRF-Token` header and compared against the value stored on the
-   session row with a constant-time comparison. A cross-origin page can cause
-   the browser to *send* the cookie but cannot *read* it to echo it back.
-2. **Origin allowlist.** The `Origin` header is checked against
-   `ALLOWED_ORIGINS` on the same requests.
-
-Either failing rejects with `403`. `/api/ingest` is exempt because it
-authenticates with a bearer device key, which a browser will never attach on
-its own, and there is therefore no ambient authority to abuse.
-
-### CORS
-
-An explicit allowlist with `credentials: true`, never a wildcard — and a
-wildcard would be rejected by the browser anyway once credentials are involved.
-An unknown origin receives no CORS headers at all.
-
-### Login hardening
-
-- Unknown email and wrong password return an identical body and status, and the
-  unknown-email path performs a dummy Argon2 verification so response timing
-  does not enumerate accounts.
-- Per-account throttle in the database: 8 failures in 15 minutes locks the
-  account for 15 minutes. It survives restarts and IP rotation, which an
-  IP-keyed limiter alone does not.
-- A separate IP-keyed HTTP limiter caps login at 10 attempts per 5 minutes and
-  registration at 5 per 15 minutes.
-
-Registration necessarily reveals whether an address is already in use — there
-is no way to create an account at an address that already exists. The
-mitigation is the rate limit, not a vague message.
+A slow hash is deliberately not used here. Argon2 is the right answer for
+human-chosen passwords; for a full-entropy machine key there is no dictionary to
+search, so it would add latency to every ingest request and buy nothing.
 
 ---
 
-## Authorisation
+## What protects the rest
 
-**The backend is the only trust boundary.** Route guards in the SPA are
-navigation convenience; the code is written on the assumption that they can be
-bypassed, because they can.
+Reads and design writes are unauthenticated, so the controls are structural
+rather than identity-based.
 
-Every protected handler:
-
-- re-derives the caller from the session cookie on that request,
-- puts `user_id` in the SQL `WHERE` clause rather than filtering after the
-  fetch, so ownership cannot be accidentally omitted, and
-- returns `404` rather than `403` for records owned by someone else, so probing
-  cannot confirm that an id exists.
-
-This is covered by `backend/test/ownership.test.ts`, which assumes an attacker
-who knows the exact id of another user's record and holds a valid session of
-their own.
+- **Rate limiting.** A global IP-keyed limiter (300 requests/minute), plus
+  per-device ingest limits (120/minute) and separate per-IP ceilings on the map
+  proxy (600 tiles/minute, 30 searches/minute). With no accounts these are the
+  main backstop against abuse.
+- **A library ceiling.** The design table is capped at 200 rows so a script
+  cannot fill the volume.
+- **Bounded payloads.** 256 KiB for most routes, 1 MiB for ingest, 200 readings
+  per batch, 64 KiB for a single `extra` blob.
+- **CORS with an explicit allowlist**, and `credentials: false` because nothing
+  sends a cookie. An unknown origin receives no CORS headers at all. This stops
+  casual embedding; it is not an access control, since anything that is not a
+  browser ignores CORS entirely.
 
 ---
 
-## Other controls
+## Input handling and output hygiene
 
-- **Content-Security-Policy.** Injected into `index.html` at build time so
-  `connect-src` always matches the configured API origin. No `unsafe-inline` or
-  `unsafe-eval` for scripts. `style-src` allows inline styles because MapLibre
-  injects rules at runtime; that is a style directive and cannot execute code.
-- **Rendering.** All device- and user-supplied strings are rendered as React
-  text children. There is no `dangerouslySetInnerHTML` anywhere in the tree.
-  Telemetry `extra` fields and device names reach the DOM only as text.
+- **Validation.** Zod schemas are the authoritative validator, with physical
+  plausibility ranges on every sensor field so a unit mix-up (psi sent as kPa)
+  is rejected rather than stored. The client validates too, but only for speed
+  of feedback.
+- **SQL.** Every value is a bound parameter. Column, metric, and sort names come
+  from server-side allowlists, because identifiers cannot be parameterised —
+  that is an injection concern independent of authentication.
+- **Rendering.** All device-supplied strings are rendered as React text
+  children. There is no `dangerouslySetInnerHTML` anywhere in the tree, so an
+  `extra` field containing markup round-trips as an inert string.
 - **CSV injection.** Exported cells beginning with `=`, `+`, `-`, or `@` are
   prefixed with an apostrophe, because device names and the `extra` blob are
   attacker-influenced and a spreadsheet will execute a formula.
 - **Errors fail closed.** One handler converts errors to responses. Known
-  `ApiError`s carry a message written for a user; everything else collapses to
-  a generic `500`. Stack traces, SQL text, file paths, and upstream provider
+  `ApiError`s carry a message written for a user; everything else collapses to a
+  generic `500`. Stack traces, SQL text, file paths, and upstream provider
   responses are logged server-side and never serialised.
 - **Response headers.** `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive
   `Permissions-Policy`, and HSTS in production.
-- **Share links.** A share token identifies one design, not a user and not a
-  session. The response carries no owner identity, no internal design id, and
-  no sibling designs. Tokens are revocable and stored hashed. Presenting one as
-  a session cookie or bearer token authenticates nothing — covered by a test.
-- **Untrusted parameters.** Design parameters arriving from a URL are clamped
-  by `sanitiseParams` before reaching the generator, so a tampered link cannot
-  request a ten-million-triangle mesh or a negative dimension.
-- **Immutable readings.** Enforced by a database trigger, not by the absence of
-  an `UPDATE` statement.
+- **Immutable readings.** Enforced by a `BEFORE UPDATE` trigger in SQLite, not
+  by the absence of an `UPDATE` statement.
+- **Untrusted design parameters.** Parameters arriving from a share URL are
+  clamped by `sanitiseParams` before reaching the generator, so a tampered link
+  cannot request a ten-million-triangle mesh or a negative dimension.
 
-### The CSP header, for hosts that can set one
+### Content-Security-Policy
+
+Injected into `index.html` at build time so `connect-src` always matches the
+configured API origin. No `unsafe-inline` or `unsafe-eval` for scripts.
+`style-src` allows inline styles because MapLibre injects rules at runtime; that
+is a style directive and cannot execute code.
 
 GitHub Pages cannot set response headers, so the policy ships as a meta tag —
 which cannot express `frame-ancestors` or `report-uri`. Behind a host that can
@@ -204,8 +189,8 @@ the output and fails on:
 - forbidden files reaching the bundle (`.env*`, `*.pem`, `id_rsa`,
   `credentials.json`, `service-account*.json`)
 
-The deploy workflow runs the same check and injects no repository secret. **If
-a repository secret is ever needed at build time, the design is wrong** — the
+The deploy workflow runs the same check and injects no repository secret. **If a
+repository secret is ever needed at build time, the design is wrong** — the
 feature belongs behind a backend proxy route.
 
 The scanner is a backstop, not the control. The control is that the backend
@@ -214,8 +199,6 @@ holds every credential and the frontend has no code path that would use one.
 ---
 
 ## If something leaks
-
-Rotate in this order. Each step is independent.
 
 ### A map or geocoding key
 
@@ -226,42 +209,49 @@ Rotate in this order. Each step is independent.
 
 ### A device key
 
-1. **Devices → Rotate key.** The previous key stops working the instant the
-   request returns; only the hash is stored, so there is nothing to revoke
-   separately.
+1. `npm run device -- rotate <device-id>` on the server. The previous key stops
+   working the instant the command returns; only the hash is stored, so there is
+   nothing to revoke separately.
 2. Reconfigure the device with the new key.
-3. Existing readings are unaffected. If bogus readings were ingested, delete
-   the device (which cascades to its readings) and register a fresh one.
-
-### A user password
-
-1. Sign in and change it, then **sign out everywhere**
-   (`POST /api/auth/logout-all`) to revoke every session immediately.
-2. If the account is compromised and inaccessible, delete its sessions
-   server-side: `DELETE FROM sessions WHERE user_id = ?`.
-
-### A session token
-
-`POST /api/auth/logout-all` for that user. Tokens are opaque and stored hashed,
-so there is no signing key to rotate and no other session is affected.
+3. Existing readings are unaffected. If bogus readings were ingested,
+   `npm run device -- remove <device-id>` deletes the device and cascades to its
+   readings; then register a fresh one.
 
 ### A share link
 
-**Studio → Share → Revoke all.** All outstanding links for that design stop
-working immediately. Other designs are unaffected — a share token has never
-granted more than the single design it names.
+`Studio → Share → Revoke all`, or delete the rows from `design_shares`. Note
+that with no accounts this only revokes the permalink — the design remains
+readable through `GET /api/designs` like everything else.
 
 ### The database file
 
-The Fly volume holds password hashes (Argon2id), session hashes, device-key
-hashes, and telemetry. No plaintext credential is in it. Still:
+The volume holds device-key hashes and telemetry, including location history.
+No plaintext credential is in it, but the telemetry itself is the sensitive
+part.
 
-1. Rotate every device key (each user, each device).
-2. `DELETE FROM sessions` to force universal re-authentication.
-3. Require password resets — Argon2id is expensive to attack, but a leaked hash
-   is a leaked hash.
-4. Rotate the map and geocoding keys, since an attacker with volume access
+1. Rotate every device key.
+2. Rotate the map and geocoding keys, since an attacker with volume access
    likely had environment access too.
+3. Treat the location history as disclosed.
+
+---
+
+## Putting auth back
+
+If the exposure above is not acceptable, the smallest change that closes it is
+to require a single shared credential on the read routes. Sketch:
+
+1. Add `API_ACCESS_TOKEN` to the backend environment (a `fly secret`).
+2. Add an `onRequest` hook that requires `Authorization: Bearer <token>` on
+   everything except `/health` and `/api/ingest`.
+3. **Do not put that token in the frontend bundle** — it would be published.
+   The frontend would need a real login form that exchanges a password for an
+   httpOnly cookie, which is the session model this project had before it was
+   removed and which is recoverable from the git history.
+
+The intermediate options are all worse than they look: an IP allowlist breaks on
+mobile networks, and a token in `localStorage` is readable by any injected
+script and still ships in the bundle if it is a build-time constant.
 
 ---
 

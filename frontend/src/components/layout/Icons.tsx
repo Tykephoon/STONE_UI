@@ -112,13 +112,6 @@ export const RefreshIcon = ({ size = 18, className }: IconProps) => (
   </svg>
 );
 
-export const SignOutIcon = ({ size = 18, className }: IconProps) => (
-  <svg {...base(size)} className={className}>
-    <path d="M12.4 14v1.6a1.6 1.6 0 0 1-1.6 1.6H5.2a1.6 1.6 0 0 1-1.6-1.6V4.4a1.6 1.6 0 0 1 1.6-1.6h5.6a1.6 1.6 0 0 1 1.6 1.6V6" />
-    <path d="M8.6 10h8M14 7.4L16.6 10 14 12.6" />
-  </svg>
-);
-
 export const MenuIcon = ({ size = 18, className }: IconProps) => (
   <svg {...base(size)} className={className}>
     <path d="M3.4 6h13.2M3.4 10h13.2M3.4 14h13.2" />

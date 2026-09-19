@@ -1,10 +1,9 @@
 /**
- * Public viewer for a shared design.
+ * Viewer for a shared design.
  *
- * Deliberately unauthenticated and deliberately minimal. The API returns the
- * design's parameters and nothing that identifies its owner, so this page
- * cannot display — and never receives — an email address, a user id, a sibling
- * design, or any telemetry. Possession of the link grants exactly this view.
+ * A permalink to one design, rendered without the app shell. The API returns
+ * that design's parameters and nothing else — no internal id, no sibling
+ * designs, no telemetry — and the link is revocable by whoever minted it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -16,7 +15,6 @@ import { DownloadIcon } from '../../components/layout/Icons';
 import { Button } from '../../components/ui/Button';
 import { ErrorState, LoadingPanel, Spinner } from '../../components/ui/Feedback';
 import { Toggle } from '../../components/ui/Form';
-import { useAuth } from '../../auth/AuthContext';
 import { formatCount } from '../../lib/format';
 import { formatRelative } from '../../lib/time';
 import { StoneViewer } from './StoneViewer';
@@ -27,7 +25,6 @@ import styles from './SharedDesignPage.module.css';
 
 export function SharedDesignPage(): JSX.Element {
   const { token } = useParams<{ token: string }>();
-  const { status } = useAuth();
 
   const [params, setParams] = useState<DesignParams | null>(null);
   const [name, setName] = useState('Shared stone');
@@ -134,19 +131,11 @@ export function SharedDesignPage(): JSX.Element {
           <Logo height={24} />
         </Link>
         <div className={styles.topbarActions}>
-          {status === 'authenticated' ? (
-            <Link to={`/studio?d=${encodeParams(params, name)}`}>
-              <Button size="sm" variant="secondary">
-                Open a copy in the studio
-              </Button>
-            </Link>
-          ) : (
-            <Link to="/login">
-              <Button size="sm" variant="ghost">
-                Sign in
-              </Button>
-            </Link>
-          )}
+          <Link to={`/studio?d=${encodeParams(params, name)}`}>
+            <Button size="sm" variant="secondary">
+              Open a copy in the studio
+            </Button>
+          </Link>
         </div>
       </header>
 

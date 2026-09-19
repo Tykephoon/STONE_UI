@@ -1,11 +1,17 @@
 /**
- * Saved stone designs, and the share links that expose exactly one of them.
+ * Saved stone designs, and the share links that point at one of them.
+ *
+ * With no user accounts, designs are a single shared library: anyone who can
+ * reach the API can list, create, edit, and delete them. A share link is
+ * therefore a stable permalink rather than a grant of access — it is still
+ * useful for referring to one design, and still revocable, but it no longer
+ * protects anything.
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createDesignSchema, updateDesignSchema } from '../domain/design.js';
 import { sha256 } from '../lib/crypto.js';
-import { ApiError, notFound } from '../lib/errors.js';
+import { conflict, notFound } from '../lib/errors.js';
 import { newId, newSecret } from '../lib/ids.js';
 import { parseOrThrow } from '../lib/validate.js';
 
@@ -22,8 +28,13 @@ interface DesignRow {
 
 const idParamsSchema = z.object({ id: z.string().min(1).max(64) }).strict();
 
-/** Per-user ceiling, so a scripted client cannot fill the volume. */
-const MAX_DESIGNS_PER_USER = 200;
+/**
+ * Library ceiling, so a scripted client cannot fill the volume.
+ *
+ * With no accounts this is the only backstop on design writes, alongside the
+ * global HTTP rate limit.
+ */
+const MAX_DESIGNS = 200;
 
 function serialise(row: DesignRow) {
   return {
@@ -43,27 +54,24 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   const db = app.db;
 
   app.get('/api/designs', async (request) => {
-    app.requireUser(request);
 
     const rows = db
       .prepare(
         `SELECT d.id, d.name, d.params, d.latitude, d.longitude, d.place_label,
                 d.created_at, d.updated_at
            FROM designs d
-          WHERE d.user_id = ?
           ORDER BY d.updated_at DESC`,
       )
-      .all(request.auth.user.id) as DesignRow[];
+      .all() as DesignRow[];
 
     const shareCounts = db
       .prepare(
         `SELECT s.design_id, COUNT(*) AS n
            FROM design_shares s
-           JOIN designs d ON d.id = s.design_id
-          WHERE d.user_id = ? AND s.revoked_at IS NULL
+          WHERE s.revoked_at IS NULL
           GROUP BY s.design_id`,
       )
-      .all(request.auth.user.id) as { design_id: string; n: number }[];
+      .all() as { design_id: string; n: number }[];
 
     const shared = new Map(shareCounts.map((row) => [row.design_id, row.n]));
 
@@ -73,46 +81,36 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/designs/:id', async (request) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(idParamsSchema, request.params);
 
     const row = db
       .prepare(
         `SELECT id, name, params, latitude, longitude, place_label, created_at, updated_at
-           FROM designs WHERE id = ? AND user_id = ?`,
+           FROM designs WHERE id = ?`,
       )
-      .get(id, request.auth.user.id) as DesignRow | undefined;
+      .get(id) as DesignRow | undefined;
 
     if (!row) throw notFound('Design not found.');
     return { design: serialise(row) };
   });
 
   app.post('/api/designs', async (request, reply) => {
-    app.requireUser(request);
     const body = parseOrThrow(createDesignSchema, request.body);
 
-    const count = (
-      db.prepare('SELECT COUNT(*) AS n FROM designs WHERE user_id = ?').get(request.auth.user.id) as {
-        n: number;
-      }
-    ).n;
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM designs').get() as { n: number }).n;
 
-    if (count >= MAX_DESIGNS_PER_USER) {
-      throw new ApiError(
-        'conflict',
-        `You have reached the limit of ${MAX_DESIGNS_PER_USER} saved designs.`,
-      );
+    if (count >= MAX_DESIGNS) {
+      throw conflict(`The library is limited to ${MAX_DESIGNS} designs.`);
     }
 
     const id = newId('dsn');
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO designs (id, user_id, name, params, latitude, longitude, place_label, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO designs (id, name, params, latitude, longitude, place_label, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
-      request.auth.user.id,
       body.name,
       JSON.stringify(body.params),
       body.latitude ?? null,
@@ -138,14 +136,11 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.put('/api/designs/:id', async (request) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(idParamsSchema, request.params);
     const body = parseOrThrow(updateDesignSchema, request.body);
 
-    const owned = db
-      .prepare('SELECT id FROM designs WHERE id = ? AND user_id = ?')
-      .get(id, request.auth.user.id);
-    if (!owned) throw notFound('Design not found.');
+    const exists = db.prepare('SELECT id FROM designs WHERE id = ?').get(id);
+    if (!exists) throw notFound('Design not found.');
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -174,29 +169,22 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
     fields.push('updated_at = ?');
     values.push(new Date().toISOString());
 
-    db.prepare(`UPDATE designs SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`).run(
-      ...values,
-      id,
-      request.auth.user.id,
-    );
+    db.prepare(`UPDATE designs SET ${fields.join(', ')} WHERE id = ?`).run(...values, id);
 
     const row = db
       .prepare(
         `SELECT id, name, params, latitude, longitude, place_label, created_at, updated_at
-           FROM designs WHERE id = ? AND user_id = ?`,
+           FROM designs WHERE id = ?`,
       )
-      .get(id, request.auth.user.id) as DesignRow;
+      .get(id) as DesignRow;
 
     return { design: serialise(row) };
   });
 
   app.delete('/api/designs/:id', async (request, reply) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(idParamsSchema, request.params);
 
-    const result = db
-      .prepare('DELETE FROM designs WHERE id = ? AND user_id = ?')
-      .run(id, request.auth.user.id);
+    const result = db.prepare('DELETE FROM designs WHERE id = ?').run(id);
 
     if (result.changes === 0) throw notFound('Design not found.');
 
@@ -207,19 +195,15 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Mint a share link.
    *
-   * The token is returned once and stored only as a hash, so the share table
-   * cannot be read to harvest working links. The token identifies a design —
-   * not a user, not a session — so possession grants read access to that one
-   * record and nothing else.
+   * The token is returned once and stored only as a hash. It identifies a
+   * design — not a user, not a session — so it can never be widened into
+   * anything else.
    */
   app.post('/api/designs/:id/share', async (request, reply) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(idParamsSchema, request.params);
 
-    const owned = db
-      .prepare('SELECT id FROM designs WHERE id = ? AND user_id = ?')
-      .get(id, request.auth.user.id);
-    if (!owned) throw notFound('Design not found.');
+    const exists = db.prepare('SELECT id FROM designs WHERE id = ?').get(id);
+    if (!exists) throw notFound('Design not found.');
 
     const token = newSecret(24);
     db.prepare(
@@ -231,13 +215,10 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete('/api/designs/:id/share', async (request) => {
-    app.requireUser(request);
     const { id } = parseOrThrow(idParamsSchema, request.params);
 
-    const owned = db
-      .prepare('SELECT id FROM designs WHERE id = ? AND user_id = ?')
-      .get(id, request.auth.user.id);
-    if (!owned) throw notFound('Design not found.');
+    const exists = db.prepare('SELECT id FROM designs WHERE id = ?').get(id);
+    if (!exists) throw notFound('Design not found.');
 
     const result = db
       .prepare(
@@ -249,11 +230,10 @@ export async function designRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /**
-   * Public read of a shared design.
+   * Read a shared design by token.
    *
-   * Unauthenticated by design. The response carries the geometry parameters and
-   * nothing that identifies the owner — no user id, no email, no device data,
-   * no sibling designs.
+   * Returns the geometry parameters and nothing else — no internal id, no
+   * device data, no sibling designs.
    */
   app.get(
     '/api/share/:token',

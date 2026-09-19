@@ -15,6 +15,27 @@ frontend never talks to the device, and never to any third party directly.
 
 ---
 
+## No accounts: read this before deploying
+
+There is **no sign-in**. Anyone who knows the API URL can read every reading —
+including **the GPS coordinates of every reading** — and can create, edit, or
+delete saved 3D designs.
+
+Making the GitHub repository private does not change that. A private repo hides
+the source, not the deployed site, and not the API, which is a separate
+deployment on a different host. (On a Free plan, a private repo disables GitHub
+Pages entirely; on a paid plan the site publishes and stays world-readable.)
+
+What **is** still protected: writing readings requires a device key, and there
+is no HTTP route that issues one. Provisioning is a server-side command, so a
+stranger cannot inject fake telemetry into your database.
+
+If your location history is sensitive, this is the wrong model.
+[SECURITY.md](./SECURITY.md) spells out the exposure and ends with the smallest
+change that restores authentication.
+
+---
+
 ## The one rule
 
 **Nothing in `frontend/` may contain a credential.** Everything the build emits
@@ -26,12 +47,10 @@ config, or in comments.
 The only runtime configuration the bundle carries is the public API base URL
 and non-sensitive feature flags.
 
-Every credentialed call is proxied. The backend holds the secret, authenticates
-the user, and makes the outbound request on their behalf. `npm run build` runs
-a bundle scanner that fails the build if a likely secret appears in the output,
-and the deploy workflow runs the same check.
-
-See [SECURITY.md](./SECURITY.md) for where secrets live and what to rotate.
+Every credentialed call is proxied. The backend holds the secret and makes the
+outbound request on the caller's behalf. `npm run build` runs a bundle scanner
+that fails the build if a likely secret appears in the output, and the deploy
+workflow runs the same check.
 
 ---
 
@@ -44,7 +63,7 @@ Requires Node 22+.
 cd backend
 npm install
 cp .env.example .env          # defaults work for local development
-npm run seed -- --email you@example.com --password 'a-long-enough-password'
+npm run seed                  # two simulated devices, three weeks of readings
 npm run dev                   # http://localhost:8080
 
 # --- frontend (second terminal) -----------------------------------------
@@ -54,16 +73,10 @@ cp .env.example .env          # points at http://localhost:8080
 npm run dev                   # http://localhost:5173
 ```
 
-Sign in with the credentials you passed to the seed. It generates three weeks
-of simulated telemetry across two devices, so the dashboard has something real
-to render before hardware exists.
-
-### A note on cookies in development
-
-Session cookies are `SameSite=None; Secure` because the SPA and the API are on
-different origins in production. Browsers treat `localhost` as a trustworthy
-origin, so `Secure` cookies are accepted over plain HTTP there and local
-development needs no override.
+Open http://localhost:5173. There is no sign-in. The seed generates three weeks
+of simulated telemetry across two devices — including a slow leak on one
+rear-left tyre — so the dashboard has something real to render before hardware
+exists.
 
 ---
 
@@ -74,13 +87,12 @@ development needs no override.
 | Command | Does |
 |---|---|
 | `npm run dev` | Watch-mode server on `:8080` |
-| `npm test` | Typecheck plus 62 tests (auth, ownership, ingest) |
+| `npm test` | Typecheck plus 48 tests (access model, ingest) |
 | `npm run typecheck` | Types only, including the test files |
 | `npm run build` | Compile to `dist/` |
 | `npm start` | Run the compiled server |
-| `npm run seed` | Generate a demo account and simulated telemetry |
-
-Seed options: `--email`, `--password`, `--days` (default 21), `--reset`.
+| `npm run seed` | Simulated devices and telemetry (`--days`, `--reset`) |
+| `npm run device` | Register, rotate, and remove devices |
 
 ### Frontend
 
@@ -88,23 +100,46 @@ Seed options: `--email`, `--password`, `--days` (default 21), `--reset`.
 |---|---|
 | `npm run dev` | Vite dev server on `:5173` |
 | `npm test` | 13 generator tests (determinism, dimensions, untrusted input) |
-| `npm run typecheck` | All three TS projects |
+| `npm run typecheck` | All four TS projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
 | `npm run preview` | Serve the built bundle locally |
 
 ---
 
+## Managing devices
+
+A device key is the only credential in the system, and it is what stops a
+stranger writing to your readings table. It is therefore minted locally rather
+than through the API — there is no HTTP route that creates one.
+
+```bash
+npm run device -- list
+npm run device -- add "Pico-01 · Trail Rig" --notes "BME280 + MPU-6050"
+npm run device -- rotate dev_xxxxxxxxxxxxxxxxxx
+npm run device -- remove dev_xxxxxxxxxxxxxxxxxx
+```
+
+On Fly.io, run it against the live volume:
+
+```bash
+fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
+```
+
+Keys are shown once and stored only as a SHA-256, so a lost key is rotated
+rather than recovered. Rotating invalidates the previous key immediately.
+
+---
+
 ## Data model
 
 ```
-users ──┬── sessions
-        ├── devices ─── readings        (append-only)
-        └── designs ─── design_shares
+devices ─── readings        (append-only)
+designs ─── design_shares
 ```
 
-A **device** belongs to exactly one user: id, display name, SHA-256 of its key,
-a non-secret key prefix for identification, and timestamps.
+There is no users table. A **device** has an id, a display name, the SHA-256 of
+its key, a non-secret key prefix for identification, and timestamps.
 
 A **reading** belongs to exactly one device and records:
 
@@ -117,13 +152,9 @@ A **reading** belongs to exactly one device and records:
 - `extra` — a JSON column holding every field the device sent that the schema
   does not name, so unknown keys are preserved rather than dropped
 
-`user_id` is denormalised onto `readings` so every read path scopes by owner in
-the `WHERE` clause without a join.
-
 **Readings are immutable.** A SQLite `BEFORE UPDATE` trigger raises on any
-attempt to modify one, and no endpoint exposes a mutation. Deleting a device
-cascades to its readings — immutable is not the same as undeletable, and a user
-must be able to remove their own data.
+attempt to modify one, and no endpoint exposes a mutation. Deleting a device via
+the CLI cascades to its readings — immutable is not the same as undeletable.
 
 ---
 
@@ -176,31 +207,29 @@ Content-Type: application/json
 ## API
 
 ```
-POST   /api/auth/register        POST   /api/auth/login       POST /api/auth/logout
-POST   /api/auth/logout-all      POST   /api/auth/refresh
-GET    /api/auth/me              GET    /api/auth/csrf
-
-GET    /api/devices              POST   /api/devices          GET    /api/devices/:id
-PATCH  /api/devices/:id          DELETE /api/devices/:id      POST   /api/devices/:id/rotate-key
+GET    /api/devices              GET    /api/devices/:id      (read-only)
 
 GET    /api/readings             GET    /api/readings/:id
-GET    /api/readings/stats       GET    /api/readings/series  GET    /api/readings/export
+GET    /api/readings/stats       GET    /api/readings/series  GET /api/readings/export
 
-POST   /api/ingest               (device key, not a session)
+POST   /api/ingest               (device key required)
 
 GET    /api/designs              POST   /api/designs          GET    /api/designs/:id
 PUT    /api/designs/:id          DELETE /api/designs/:id
 POST   /api/designs/:id/share    DELETE /api/designs/:id/share
-GET    /api/share/:token         (unauthenticated; one design, no owner data)
+GET    /api/share/:token
 
 GET    /api/geo/style.json       GET    /api/geo/tiles/:z/:x/:y   GET /api/geo/search
 
 GET    /health
 ```
 
-Every endpoint except `/health`, `/api/ingest`, `/api/share/:token`, and the
-auth entry points requires a session, re-derives the caller from the cookie,
-and scopes its queries by `user_id`.
+`POST /api/ingest` is the only route that requires a credential. Everything else
+is open.
+
+There is deliberately **no** route that creates, rotates, or deletes a device —
+those return 404 because no such route is registered. That is what keeps the
+ingest key meaningful, and a test asserts it.
 
 ---
 
@@ -222,8 +251,8 @@ hundred bytes and a share link reproduces exactly what its author saw.
   mineral veining and crevice shading.
 
 Export is glTF (`.glb`) or OBJ, in millimetres at the origin with the viewer's
-presentation transform removed. Sharing is either an encoded parameter URL
-(no server involved) or a revocable backend share token.
+presentation transform removed. Sharing is either an encoded parameter URL (no
+server involved) or a revocable backend share token.
 
 ---
 
@@ -246,6 +275,9 @@ fly secrets set GEOCODE_KEY='your-maptiler-key'
 fly secrets set ALLOWED_ORIGINS='https://tykephoon.github.io'
 
 fly deploy
+
+# Register your first device against the live volume.
+fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
 ```
 
 `fly.toml` pins `min_machines_running = 1`: SQLite lives on one volume, and
@@ -297,22 +329,21 @@ The placeholders currently in place are clearly marked as such.
 backend/
   src/
     config.ts            Environment parsing — every secret enters here
-    app.ts               Fastify factory: CORS, cookies, rate limits, error handler
+    app.ts               Fastify factory: CORS, rate limits, error handler
     db/                  Connection and forward-only migrations
     domain/              Zod schemas — the authoritative validators
-    lib/                 Crypto, sessions, errors, rate limiting, ids
-    plugins/auth.ts      Session resolution, CSRF, requireUser
+    lib/                 Hashing, errors, rate limiting, ids
     routes/              One module per resource
     scripts/seed.ts      Simulated telemetry generator
-  test/                  auth · ownership · ingest
+    scripts/device.ts    Device provisioning CLI
+  test/                  access model · ingest
 
 frontend/
   scripts/check-bundle-secrets.mjs   Pre-publish bundle audit
   src/
     api/                 The only place that performs network calls
-    auth/                Session context and route guards
     components/          ui · charts · layout · map · filters
-    features/            auth · dashboard · readings · devices · studio
+    features/            dashboard · readings · devices · studio
     hooks/  lib/  styles/
   test/                  Generator determinism and untrusted input
 ```

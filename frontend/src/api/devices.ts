@@ -1,4 +1,10 @@
-/** Device endpoints. */
+/**
+ * Device endpoints — read-only.
+ *
+ * There is no create, rotate, or delete here because the API exposes none.
+ * Minting a device key is what stops a stranger writing to the readings table,
+ * so it is a local operation: `npm run device -- add` on the server.
+ */
 import { request } from './client';
 import type { Device } from './types';
 
@@ -8,35 +14,4 @@ export function listDevices(signal?: AbortSignal): Promise<{ devices: Device[] }
 
 export function getDevice(id: string, signal?: AbortSignal): Promise<{ device: Device }> {
   return request<{ device: Device }>(`/api/devices/${encodeURIComponent(id)}`, signal ? { signal } : {});
-}
-
-/** The plaintext key is returned exactly once and is never retrievable again. */
-export function createDevice(input: {
-  name: string;
-  notes?: string | null;
-}): Promise<{ device: Device; device_key: string }> {
-  return request<{ device: Device; device_key: string }>('/api/devices', {
-    method: 'POST',
-    body: input,
-  });
-}
-
-export function updateDevice(
-  id: string,
-  input: { name?: string; notes?: string | null },
-): Promise<{ device: Device }> {
-  return request<{ device: Device }>(`/api/devices/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: input,
-  });
-}
-
-export function rotateDeviceKey(
-  id: string,
-): Promise<{ device_key: string; key_prefix: string; key_rotated_at: string }> {
-  return request(`/api/devices/${encodeURIComponent(id)}/rotate-key`, { method: 'POST' });
-}
-
-export function deleteDevice(id: string): Promise<void> {
-  return request<void>(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

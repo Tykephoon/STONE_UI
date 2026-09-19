@@ -2,31 +2,27 @@
  * The HTTP layer.
  *
  * Every network call in the application goes through `request()`. UI components
- * never call `fetch` directly, so cookie policy, CSRF handling, session refresh,
- * and error normalisation each have exactly one implementation.
+ * never call `fetch` directly, so endpoint construction and error normalisation
+ * each have exactly one implementation.
  *
- * Session handling notes:
+ * This installation has no user accounts, so there is no session cookie, no
+ * CSRF token, and no credential of any kind in this file. `credentials` is left
+ * at the default (`same-origin`), which means the browser sends nothing
+ * cross-origin to the API — there is nothing to send.
  *
- *   - `credentials: 'include'` sends the httpOnly session cookie. The token is
- *     never read by JavaScript and is never stored in localStorage or
- *     sessionStorage, so an injected script cannot exfiltrate it.
- *   - The CSRF token is the one value the client *must* read, because echoing
- *     it into a header is what a cross-origin page cannot do. It is held in
- *     memory and mirrored from the readable `stone_csrf` cookie.
+ * The one credential the system still has is the device key, and it lives on
+ * the device. It never appears in this bundle.
  */
 import { config } from '../config';
 
 export type ApiErrorCode =
   | 'bad_request'
   | 'validation_failed'
-  | 'invalid_credentials'
-  | 'unauthenticated'
   | 'forbidden'
   | 'not_found'
   | 'conflict'
   | 'rate_limited'
   | 'payload_too_large'
-  | 'registration_closed'
   | 'upstream_unavailable'
   | 'internal_error'
   | 'network_error';
@@ -57,50 +53,13 @@ export class ApiError extends Error {
     }
     return map;
   }
-
-  get isAuthError(): boolean {
-    return this.code === 'unauthenticated' || this.code === 'invalid_credentials';
-  }
-}
-
-const CSRF_COOKIE = 'stone_csrf';
-const CSRF_HEADER = 'X-CSRF-Token';
-const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-
-/**
- * In-memory mirror of the CSRF token.
- *
- * Kept in a module variable rather than re-parsed from `document.cookie` on
- * every call, and refreshed from the cookie whenever the server rotates it.
- */
-let csrfToken: string | null = null;
-
-function readCsrfCookie(): string | null {
-  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${CSRF_COOKIE}=([^;]*)`));
-  return match?.[1] ? decodeURIComponent(match[1]) : null;
-}
-
-export function getCsrfToken(): string | null {
-  csrfToken ??= readCsrfCookie();
-  return csrfToken;
-}
-
-export function setCsrfToken(token: string | null): void {
-  csrfToken = token;
-}
-
-/** Called after logout so a stale token is not replayed. */
-export function clearCsrfToken(): void {
-  csrfToken = null;
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | boolean | null | undefined>;
   signal?: AbortSignal;
-  /** Skip the automatic refresh-and-retry. Used by the auth calls themselves. */
-  skipRetry?: boolean;
   /** Return the raw Response instead of parsed JSON (used for file downloads). */
   raw?: boolean;
 }
@@ -114,60 +73,6 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
     }
   }
   return url.toString();
-}
-
-/**
- * Coordinates concurrent refreshes.
- *
- * Several requests can 401 at once when a session lapses. Without this, each
- * would fire its own refresh and they would rotate the token out from under one
- * another — the last rotation wins and the others retry with a dead token.
- */
-let refreshInFlight: Promise<boolean> | null = null;
-
-/** Notified when the session is definitively gone, so the app can redirect. */
-type SessionExpiredListener = () => void;
-const sessionExpiredListeners = new Set<SessionExpiredListener>();
-
-export function onSessionExpired(listener: SessionExpiredListener): () => void {
-  sessionExpiredListeners.add(listener);
-  return () => sessionExpiredListeners.delete(listener);
-}
-
-function notifySessionExpired(): void {
-  clearCsrfToken();
-  for (const listener of sessionExpiredListeners) listener();
-}
-
-async function attemptRefresh(): Promise<boolean> {
-  refreshInFlight ??= (async () => {
-    try {
-      const response = await fetch(buildUrl('/api/auth/refresh'), {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(getCsrfToken() ? { [CSRF_HEADER]: getCsrfToken()! } : {}),
-        },
-      });
-
-      if (!response.ok) return false;
-
-      const data = (await response.json()) as { csrf_token?: string };
-      if (data.csrf_token) setCsrfToken(data.csrf_token);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      // Cleared on the next tick so callers awaiting this promise all observe
-      // the same result before a new attempt can start.
-      queueMicrotask(() => {
-        refreshInFlight = null;
-      });
-    }
-  })();
-
-  return refreshInFlight;
 }
 
 async function parseError(response: Response): Promise<ApiError> {
@@ -200,35 +105,21 @@ async function parseError(response: Response): Promise<ApiError> {
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, query, signal, skipRetry = false, raw = false } = options;
+  const { method = 'GET', body, query, signal, raw = false } = options;
 
-  const send = async (): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
 
-    if (body !== undefined) {
-      headers['Content-Type'] = 'application/json';
-    }
-
-    if (MUTATING.has(method)) {
-      const token = getCsrfToken();
-      if (token) headers[CSRF_HEADER] = token;
-    }
-
-    return fetch(buildUrl(path, query), {
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path, query), {
       method,
-      // Sends and accepts the httpOnly session cookie cross-origin. The backend
-      // must name this exact origin in its allowlist for the browser to expose
-      // the response.
-      credentials: 'include',
       headers,
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       ...(signal ? { signal } : {}),
     });
-  };
-
-  let response: Response;
-  try {
-    response = await send();
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
     // A CORS rejection, DNS failure, and offline state are indistinguishable
@@ -240,33 +131,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     );
   }
 
-  /**
-   * One silent refresh-and-retry on 401.
-   *
-   * Bounded to a single attempt: if the retry also 401s, the session is
-   * genuinely gone and looping would just hammer the endpoint.
-   */
-  if (response.status === 401 && !skipRetry) {
-    const refreshed = await attemptRefresh();
-    if (refreshed) {
-      try {
-        response = await send();
-      } catch {
-        throw new ApiError('network_error', 'Cannot reach the server.', 0);
-      }
-    } else {
-      notifySessionExpired();
-    }
-  }
-
-  // The CSRF cookie may have been rotated by any response; keep the mirror fresh.
-  const rotated = readCsrfCookie();
-  if (rotated && rotated !== csrfToken) csrfToken = rotated;
-
   if (!response.ok) {
-    const error = await parseError(response);
-    if (error.code === 'unauthenticated') notifySessionExpired();
-    throw error;
+    throw await parseError(response);
   }
 
   if (raw) return response as unknown as T;
@@ -283,10 +149,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 }
 
 /**
- * Trigger a browser download from an authenticated endpoint.
+ * Trigger a browser download from the API.
  *
- * A plain `<a href>` cannot carry the credentialed cross-origin request, so the
- * payload is fetched and handed to an object URL instead.
+ * A plain `<a href>` would work here now that no credential is involved, but
+ * routing through `request()` keeps error handling identical to every other
+ * call and lets the server's filename win.
  */
 export async function downloadFile(
   path: string,

@@ -3,36 +3,31 @@
  *
  * Responses carry a stable machine-readable `code` and a message written for a
  * user. Anything that could describe internals — stack traces, SQL text, file
- * paths, upstream provider responses, internal IDs — is logged server-side and
- * never serialised into the response body. Unrecognised throwables become a
- * generic 500, so a new failure mode fails closed by default.
+ * paths, upstream provider responses — is logged server-side and never
+ * serialised into the response body. Unrecognised throwables become a generic
+ * 500, so a new failure mode fails closed by default.
  */
 
 export type ErrorCode =
   | 'bad_request'
   | 'validation_failed'
-  | 'invalid_credentials'
+  /** Only ever raised by `/api/ingest` for a missing or unknown device key. */
   | 'unauthenticated'
-  | 'forbidden'
   | 'not_found'
   | 'conflict'
   | 'rate_limited'
   | 'payload_too_large'
-  | 'registration_closed'
   | 'upstream_unavailable'
   | 'internal_error';
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
   bad_request: 400,
   validation_failed: 422,
-  invalid_credentials: 401,
   unauthenticated: 401,
-  forbidden: 403,
   not_found: 404,
   conflict: 409,
   rate_limited: 429,
   payload_too_large: 413,
-  registration_closed: 403,
   upstream_unavailable: 502,
   internal_error: 500,
 };
@@ -73,30 +68,19 @@ export class ApiError extends Error {
   }
 }
 
-export const badRequest = (message = 'The request could not be processed.', issues?: FieldIssue[]) =>
-  new ApiError('bad_request', message, { issues });
-
 export const validationFailed = (issues: FieldIssue[], message = 'Some fields need attention.') =>
   new ApiError('validation_failed', message, { issues });
 
-export const unauthenticated = (message = 'Sign in to continue.') =>
+/**
+ * A device key was missing or unrecognised.
+ *
+ * The same message is used for both, so probing cannot distinguish a malformed
+ * key from a real one that has been rotated out.
+ */
+export const unauthenticated = (message = 'A valid device key is required.') =>
   new ApiError('unauthenticated', message);
 
-/**
- * Deliberately identical for "no such account" and "wrong password" — the
- * distinction is exactly what account enumeration needs.
- */
-export const invalidCredentials = () =>
-  new ApiError('invalid_credentials', 'That email and password combination is not valid.');
-
-export const forbidden = (message = 'You do not have access to this.') =>
-  new ApiError('forbidden', message);
-
-/**
- * Used for records that exist but belong to someone else, as well as records
- * that genuinely do not exist. Returning 403 for the former would confirm the
- * ID is real to anyone probing.
- */
+/** Used for records that do not exist, and for routes that are not registered. */
 export const notFound = (message = 'Not found.') => new ApiError('not_found', message);
 
 export const conflict = (message: string) => new ApiError('conflict', message);
