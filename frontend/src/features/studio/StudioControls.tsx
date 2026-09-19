@@ -6,7 +6,7 @@
  * is applied immediately — there is no Apply button, because the preview is the
  * feedback.
  */
-import type { DesignParams } from '../../api/types';
+import type { DesignParams } from '../../data/types';
 import { Button } from '../../components/ui/Button';
 import { ColorField, FieldGroup, Slider, TextField } from '../../components/ui/Form';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';

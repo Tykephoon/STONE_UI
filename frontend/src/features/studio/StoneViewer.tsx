@@ -26,7 +26,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { DesignParams } from '../../api/types';
+import type { DesignParams } from '../../data/types';
 import styles from './StoneViewer.module.css';
 
 export interface StoneViewerProps {

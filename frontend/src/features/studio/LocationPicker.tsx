@@ -6,9 +6,9 @@
  * origin.
  */
 import { type FormEvent, useCallback, useState } from 'react';
-import { ApiError } from '../../api/client';
-import { searchPlaces } from '../../api/geo';
-import type { GeoResult } from '../../api/types';
+import { DataError } from '../../data/store';
+import { searchPlaces } from '../../data/geo';
+import type { GeoResult } from '../../data/types';
 import { MapPinIcon, SearchIcon } from '../../components/layout/Icons';
 import { LazyMapView } from '../../components/map/LazyMapView';
 import { Button } from '../../components/ui/Button';
@@ -59,7 +59,7 @@ export function LocationPicker({
       } catch (cause) {
         setResults(null);
         setSearchError(
-          cause instanceof ApiError ? cause.message : 'Search is unavailable right now.',
+          cause instanceof DataError ? cause.message : 'Search is unavailable right now.',
         );
       } finally {
         setIsSearching(false);

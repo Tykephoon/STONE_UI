@@ -1,64 +1,96 @@
 /**
- * Device overview — read-only.
+ * Devices.
  *
- * There is no "register device" button because there is no API route behind
- * one. With no user accounts, an HTTP endpoint that minted device keys would be
- * usable by anyone who found the API, and the ingest credential would stop
- * meaning anything. Provisioning is a server-side command instead; this page
- * shows what exists and how to add more.
+ * With no server there is nothing to authenticate, so a device is simply a
+ * label used to group readings — no keys, no rotation, no online state. The
+ * page exists so imports can be attributed to the right unit, and so a
+ * device's history can be removed in one action.
  */
-import { listDevices } from '../../api/devices';
-import { ChipIcon, RefreshIcon } from '../../components/layout/Icons';
+import { type FormEvent, useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { createDevice, deleteDevice, listDevices, updateDevice } from '../../data/store';
+import type { Device } from '../../data/types';
+import { ChipIcon, DownloadIcon, PlusIcon, RefreshIcon } from '../../components/layout/Icons';
 import { Button } from '../../components/ui/Button';
 import { Card, CardBody, CardHeader } from '../../components/ui/Card';
-import { Badge, EmptyState, ErrorState, Skeleton, StatusDot } from '../../components/ui/Feedback';
-import { config } from '../../config';
-import { useAsync } from '../../hooks/useAsync';
+import { EmptyState, ErrorState, Skeleton } from '../../components/ui/Feedback';
+import { TextAreaField, TextField } from '../../components/ui/Form';
+import { ConfirmDialog, Modal } from '../../components/ui/Modal';
+import { useToast } from '../../components/ui/Toast';
+import { useAction, useAsync } from '../../hooks/useAsync';
 import { formatCount } from '../../lib/format';
 import { formatDateTime, formatRelative } from '../../lib/time';
 import styles from './DevicesPage.module.css';
 
-/** A device is considered online if it posted within this window. */
-const ONLINE_THRESHOLD_MS = 10 * 60_000;
-
-const PROVISIONING = `# on the server, or: fly ssh console -C "node /app/dist/scripts/device.js list"
-
-npm run device -- list
-npm run device -- add "Pico-01 · Trail Rig" --notes "BME280 + MPU-6050"
-npm run device -- rotate dev_xxxxxxxxxxxxxxxxxx
-npm run device -- remove dev_xxxxxxxxxxxxxxxxxx`;
-
-const INGEST_EXAMPLE = `POST ${config.apiBaseUrl}/api/ingest
-Authorization: Bearer stk_<your-device-key>
-Content-Type: application/json
-
-{
-  "recorded_at": "2026-09-19T10:04:00Z",
-  "latitude": 42.3398,
-  "longitude": -71.0892,
-  "altitude_m": 14.2,
-  "gps_accuracy_m": 4.5,
-  "tires": {
-    "front_left":  { "pressure_kpa": 228.4, "temp_c": 31.2 },
-    "front_right": { "pressure_kpa": 229.1, "temp_c": 30.8 },
-    "rear_left":   { "pressure_kpa": 235.0, "temp_c": 33.4 },
-    "rear_right":  { "pressure_kpa": 234.2, "temp_c": 33.1 }
-  },
-  "sensors": {
-    "ambient_temp_c": 18.4,
-    "humidity_pct": 61.2,
-    "barometric_pressure_hpa": 1014.2,
-    "accel_x_g": 0.02,
-    "accel_y_g": -0.01,
-    "accel_z_g": 1.00,
-    "battery_voltage_v": 12.4
-  },
-  "firmware": "1.4.2"
-}`;
-
 export function DevicesPage(): JSX.Element {
+  const toast = useToast();
   const state = useAsync((signal) => listDevices(signal), []);
   const devices = state.data?.devices ?? [];
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Device | null>(null);
+  const [deleting, setDeleting] = useState<Device | null>(null);
+
+  const [name, setName] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const createAction = useAction(createDevice);
+  const updateAction = useAction(updateDevice);
+  const deleteAction = useAction(deleteDevice);
+
+  const openCreate = useCallback(() => {
+    setName('');
+    setNotes('');
+    createAction.reset();
+    setCreateOpen(true);
+  }, [createAction]);
+
+  const handleCreate = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      if (!name.trim()) return;
+
+      const result = await createAction.run({ name: name.trim(), notes: notes.trim() || null });
+      if (result.ok) {
+        setCreateOpen(false);
+        state.reload();
+        toast.success('Device added', 'Import readings and attribute them to it.');
+      }
+    },
+    [name, notes, createAction, state, toast],
+  );
+
+  const handleUpdate = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      if (!editing) return;
+
+      const result = await updateAction.run(editing.id, {
+        name: name.trim(),
+        notes: notes.trim() || null,
+      });
+      if (result.ok) {
+        setEditing(null);
+        state.reload();
+        toast.success('Device updated');
+      }
+    },
+    [editing, name, notes, updateAction, state, toast],
+  );
+
+  const handleDelete = useCallback(async () => {
+    if (!deleting) return;
+    const result = await deleteAction.run(deleting.id);
+    if (result.ok) {
+      const removed = result.data.removedReadings;
+      setDeleting(null);
+      state.reload();
+      toast.success(
+        'Device deleted',
+        removed > 0 ? `${formatCount(removed)} readings were removed with it.` : undefined,
+      );
+    }
+  }, [deleting, deleteAction, state, toast]);
 
   return (
     <div className={styles.page}>
@@ -66,18 +98,23 @@ export function DevicesPage(): JSX.Element {
         <div>
           <h1 className={styles.title}>Devices</h1>
           <p className={styles.subtitle}>
-            Each device authenticates to the ingest endpoint with its own key.
+            Labels for grouping readings. Imported data is attributed to whichever device you pick.
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={state.reload}
-          isLoading={state.isFetching && !state.isLoading}
-          iconLeft={<RefreshIcon size={15} />}
-        >
-          Refresh
-        </Button>
+        <div className={styles.headerActions}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={state.reload}
+            isLoading={state.isFetching && !state.isLoading}
+            iconLeft={<RefreshIcon size={15} />}
+          >
+            Refresh
+          </Button>
+          <Button variant="primary" onClick={openCreate} iconLeft={<PlusIcon size={15} />}>
+            Add device
+          </Button>
+        </div>
       </header>
 
       {state.error ? (
@@ -85,111 +122,204 @@ export function DevicesPage(): JSX.Element {
       ) : state.isLoading ? (
         <div className={styles.list}>
           {Array.from({ length: 2 }, (_, index) => (
-            <Skeleton key={index} height={132} radius="var(--radius-lg)" />
+            <Skeleton key={index} height={118} radius="var(--radius-lg)" />
           ))}
         </div>
       ) : devices.length === 0 ? (
         <Card>
           <EmptyState
             icon={<ChipIcon size={22} />}
-            title="No devices registered"
-            description="Register one on the server with the command below. You will be shown a key once; put it on the device and readings will start appearing on the dashboard."
+            title="No devices yet"
+            description="Add a device, then import a CSV of its readings. The importer can also create one for you."
+            action={
+              <Button variant="primary" onClick={openCreate}>
+                Add a device
+              </Button>
+            }
           />
         </Card>
       ) : (
         <div className={styles.list}>
-          {devices.map((device) => {
-            const online =
-              device.last_seen_at !== null &&
-              Date.now() - Date.parse(device.last_seen_at) < ONLINE_THRESHOLD_MS;
+          {devices.map((device) => (
+            <Card key={device.id}>
+              <CardHeader
+                title={device.name}
+                level={3}
+                subtitle={
+                  device.last_reading_at
+                    ? `Latest reading ${formatRelative(device.last_reading_at)}`
+                    : 'No readings yet'
+                }
+                actions={
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setEditing(device);
+                        setName(device.name);
+                        setNotes(device.notes ?? '');
+                        updateAction.reset();
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button size="sm" variant="danger" onClick={() => setDeleting(device)}>
+                      Delete
+                    </Button>
+                  </>
+                }
+              />
+              <CardBody>
+                {device.notes && <p className={styles.notes}>{device.notes}</p>}
 
-            return (
-              <Card key={device.id}>
-                <CardHeader
-                  title={device.name}
-                  level={3}
-                  subtitle={
-                    <span className={styles.statusLine}>
-                      <StatusDot tone={online ? 'good' : 'neutral'} pulse={online} />
-                      {online ? 'Online' : 'Idle'}
-                      {device.last_seen_at && (
-                        <>
-                          <span className={styles.separator}>·</span>
-                          <span title={formatDateTime(device.last_seen_at)}>
-                            last posted {formatRelative(device.last_seen_at)}
-                          </span>
-                        </>
-                      )}
-                    </span>
-                  }
-                />
-                <CardBody>
-                  {device.notes && <p className={styles.notes}>{device.notes}</p>}
-
-                  <dl className={styles.meta}>
-                    <div>
-                      <dt>Readings</dt>
-                      <dd>{formatCount(device.reading_count)}</dd>
-                    </div>
-                    <div>
-                      <dt>Device id</dt>
-                      <dd className={styles.mono}>{device.id}</dd>
-                    </div>
-                    <div>
-                      <dt>Key prefix</dt>
-                      <dd className={styles.mono}>{device.key_prefix}…</dd>
-                    </div>
-                    <div>
-                      <dt>Registered</dt>
-                      <dd>{formatDateTime(device.created_at)}</dd>
-                    </div>
-                    <div>
-                      <dt>Key rotated</dt>
-                      <dd>
-                        {device.key_rotated_at ? formatDateTime(device.key_rotated_at) : 'Never'}
-                      </dd>
-                    </div>
-                  </dl>
-                </CardBody>
-              </Card>
-            );
-          })}
+                <dl className={styles.meta}>
+                  <div>
+                    <dt>Readings</dt>
+                    <dd>{formatCount(device.reading_count)}</dd>
+                  </div>
+                  <div>
+                    <dt>First reading</dt>
+                    <dd>
+                      {device.first_reading_at ? formatDateTime(device.first_reading_at) : '—'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Latest reading</dt>
+                    <dd>{device.last_reading_at ? formatDateTime(device.last_reading_at) : '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Added</dt>
+                    <dd>{formatDateTime(device.created_at)}</dd>
+                  </div>
+                </dl>
+              </CardBody>
+            </Card>
+          ))}
         </div>
       )}
 
       <Card>
         <CardHeader
-          title="Managing devices"
-          subtitle="Provisioning happens on the server, not through this page"
+          title="Getting data in"
+          subtitle="There is no server, so readings arrive by import"
           level={3}
-          actions={<Badge tone="accent">CLI only</Badge>}
+          actions={
+            <Link to="/import">
+              <Button size="sm" variant="secondary" iconLeft={<DownloadIcon size={15} />}>
+                Import data
+              </Button>
+            </Link>
+          }
         />
         <CardBody>
           <p className={styles.helpText}>
-            A device key is the only credential this system has, and it is what stops anyone who
-            finds the API from writing readings into your database. Minting one therefore requires
-            access to the server rather than access to the API — there is deliberately no HTTP route
-            that creates, rotates, or deletes a device.
+            Upload a CSV or JSON file, paste rows straight from a spreadsheet, or type a single
+            reading by hand. The importer recognises common column names, checks every value
+            against a plausible range, and shows you what it found before anything is saved.
           </p>
-          <pre className={styles.snippet}>{PROVISIONING}</pre>
           <p className={styles.helpText}>
-            Keys are shown once and stored only as a hash, so a lost key is rotated rather than
-            recovered. Rotating invalidates the previous key immediately.
+            Everything lives in this browser. Use <strong>Export backup</strong> on the import
+            screen to move it to another machine — there is no account, and nothing syncs on its
+            own.
           </p>
         </CardBody>
       </Card>
 
-      <Card>
-        <CardHeader title="Posting readings" subtitle="What a device needs to send" level={3} />
-        <CardBody>
-          <p className={styles.helpText}>
-            Devices authenticate with their key as a bearer token. Send one reading, or a batch
-            under a <code>readings</code> array. Unknown fields are preserved rather than dropped
-            and appear on the reading detail page.
-          </p>
-          <pre className={styles.snippet}>{INGEST_EXAMPLE}</pre>
-        </CardBody>
-      </Card>
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Add a device"
+        description="A name to group readings under."
+        busy={createAction.isPending}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setCreateOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleCreate}
+              isLoading={createAction.isPending}
+              disabled={!name.trim()}
+            >
+              Add
+            </Button>
+          </>
+        }
+      >
+        <form className={styles.form} onSubmit={handleCreate}>
+          {createAction.error && <ErrorState error={createAction.error} compact />}
+          <TextField
+            label="Name"
+            required
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Pico-01 · Trail Rig"
+            maxLength={80}
+          />
+          <TextAreaField
+            label="Notes"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Hardware, sensors fitted, where it lives…"
+            maxLength={500}
+            hint="Optional. Shown on this page only."
+          />
+        </form>
+      </Modal>
+
+      <Modal
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        title="Edit device"
+        busy={updateAction.isPending}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleUpdate} isLoading={updateAction.isPending}>
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        <form className={styles.form} onSubmit={handleUpdate}>
+          {updateAction.error && <ErrorState error={updateAction.error} compact />}
+          <TextField
+            label="Name"
+            required
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={80}
+          />
+          <TextAreaField
+            label="Notes"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            maxLength={500}
+          />
+        </form>
+      </Modal>
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={handleDelete}
+        title="Delete this device?"
+        description={
+          <>
+            <strong>{deleting?.name}</strong> and its{' '}
+            {formatCount(deleting?.reading_count ?? 0)} readings will be removed from this browser.
+            Export a backup first if you might want them back.
+          </>
+        }
+        confirmLabel="Delete device"
+        destructive
+        isPending={deleteAction.isPending}
+      />
     </div>
   );
 }

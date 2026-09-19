@@ -9,7 +9,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { config } from '../../config';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
-import { ChipIcon, CubeIcon, GaugeIcon, ListIcon, MenuIcon } from './Icons';
+import { ChipIcon, CubeIcon, DownloadIcon, GaugeIcon, ListIcon, MenuIcon } from './Icons';
 import { Logo } from './Logo';
 import styles from './AppShell.module.css';
 
@@ -25,6 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: <GaugeIcon />, end: true },
   { to: '/readings', label: 'Readings', icon: <ListIcon /> },
   { to: '/devices', label: 'Devices', icon: <ChipIcon /> },
+  { to: '/import', label: 'Import', icon: <DownloadIcon /> },
   { to: '/studio', label: 'Studio', icon: <CubeIcon /> },
 ];
 

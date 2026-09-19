@@ -1,41 +1,46 @@
 import { readFileSync } from 'node:fs';
 import react from '@vitejs/plugin-react';
-import { type Plugin, defineConfig, loadEnv } from 'vite';
+import { type Plugin, defineConfig } from 'vite';
+
+/**
+ * Hosts the app is allowed to talk to.
+ *
+ * There are exactly two, both keyless and both OpenStreetMap: raster tiles and
+ * the Nominatim geocoder. Everything else — telemetry, designs, the 3D
+ * generator — runs entirely in the browser against local storage.
+ *
+ * Adding an entry here means adding a party that can see traffic from this
+ * page. Do not widen it casually, and never add a host that needs a key: the
+ * key would ship in the bundle. See SECURITY.md.
+ */
+const EXTERNAL_HOSTS = ['https://tile.openstreetmap.org', 'https://nominatim.openstreetmap.org'];
 
 /**
  * Build-time Content-Security-Policy injection.
  *
- * The policy has to name the API origin in `connect-src`, and that origin is
- * the one piece of genuinely public configuration the bundle carries. Writing
- * it by hand in index.html would mean a policy that silently drifts from the
- * configured backend, so it is derived from the same value the API client uses.
+ * Kept in the build rather than written by hand in index.html so the allowed
+ * hosts are declared once, beside the code that justifies them.
  *
  * A meta tag cannot express `frame-ancestors` or `report-uri` — those are
  * header-only. The equivalent header is documented in SECURITY.md for hosts
  * that can set one; GitHub Pages cannot.
  */
-function contentSecurityPolicy(apiBaseUrl: string): Plugin {
-  const apiOrigin = (() => {
-    try {
-      return new URL(apiBaseUrl).origin;
-    } catch {
-      return '';
-    }
-  })();
+function contentSecurityPolicy(): Plugin {
+  const external = EXTERNAL_HOSTS.join(' ');
 
   const policy = [
     "default-src 'self'",
     // No inline or eval'd script. Vite emits external modules in production.
     "script-src 'self'",
-    // MapLibre injects style rules at runtime, which requires inline styles.
-    // This is style-src, not script-src: it cannot execute code.
+    // MapLibre injects style rules at runtime. This is style-src, not
+    // script-src: it cannot execute code.
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    // Raster map tiles arrive as images; blob: covers canvas and worker output.
+    `img-src 'self' data: blob: ${external}`,
     "font-src 'self' data:",
-    // Only ourselves and the API. Telemetry cannot be exfiltrated to a third
-    // party even if a value somehow reached a DOM sink.
-    `connect-src 'self' ${apiOrigin}`.trim(),
-    // The 3D generator runs in a module worker created from a blob URL.
+    // Tile and geocoder fetches. No other network destination exists.
+    `connect-src 'self' ${external}`,
+    // The 3D generator and MapLibre both run module workers from blob URLs.
     "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
@@ -52,47 +57,41 @@ function contentSecurityPolicy(apiBaseUrl: string): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), 'VITE_');
-  const apiBaseUrl = env.VITE_API_BASE_URL || 'http://localhost:8080';
-
-  return {
-    // Relative asset paths, so the same bundle works at
-    // https://user.github.io/repo/ and at the domain root without rebuilding.
-    base: './',
-    plugins: [react(), contentSecurityPolicy(apiBaseUrl)],
-    define: {
-      __APP_VERSION__: JSON.stringify(
-        (JSON.parse(readFileSync('./package.json', 'utf8')) as { version: string }).version,
-      ),
-    },
-    build: {
-      target: 'es2022',
-      outDir: 'dist',
-      sourcemap: false,
-      // Source maps are off in production on purpose: they are not a secret
-      // leak on their own, but they publish the full original source of a page
-      // that handles sessions, for no user benefit.
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            // three and maplibre are large and change rarely; splitting them
-            // keeps the app chunk small and cacheable across deploys.
-            three: ['three'],
-            maplibre: ['maplibre-gl'],
-            react: ['react', 'react-dom', 'react-router-dom'],
-          },
+export default defineConfig({
+  // Relative asset paths, so the same bundle works at
+  // https://user.github.io/repo/ and at the domain root without rebuilding.
+  base: './',
+  plugins: [react(), contentSecurityPolicy()],
+  define: {
+    __APP_VERSION__: JSON.stringify(
+      (JSON.parse(readFileSync('./package.json', 'utf8')) as { version: string }).version,
+    ),
+  },
+  build: {
+    target: 'es2022',
+    outDir: 'dist',
+    // Source maps are off in production deliberately: they are not a secret
+    // leak here, but they publish the full original source for no user benefit.
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // three and maplibre are large and change rarely; splitting them
+          // keeps the app chunk small and cacheable across deploys.
+          three: ['three'],
+          maplibre: ['maplibre-gl'],
+          react: ['react', 'react-dom', 'react-router-dom'],
         },
       },
-      chunkSizeWarningLimit: 1200,
     },
-    server: {
-      port: 5173,
-      strictPort: true,
-    },
-    preview: {
-      port: 4173,
-      strictPort: true,
-    },
-  };
+    chunkSizeWarningLimit: 1200,
+  },
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  preview: {
+    port: 4173,
+    strictPort: true,
+  },
 });

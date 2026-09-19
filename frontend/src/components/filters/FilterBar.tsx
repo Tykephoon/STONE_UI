@@ -5,7 +5,7 @@
  * always visible — a filtered view that looks identical to an unfiltered one is
  * how people end up reading the wrong numbers.
  */
-import type { Device } from '../../api/types';
+import type { Device } from '../../data/types';
 import { type RangePreset, RANGE_PRESETS } from '../../lib/time';
 import { SelectField } from '../ui/Form';
 import { SegmentedControl } from '../ui/SegmentedControl';

@@ -1,9 +1,9 @@
 /**
- * API response shapes.
+ * Domain types.
  *
- * Mirrors the server's serialisers. Kept as plain interfaces rather than
- * generated types so the contract is readable in one place; the backend remains
- * the authority on what is actually sent.
+ * These describe what is stored in the browser and what the UI renders. They
+ * intentionally match the optional backend's wire format, so a record exported
+ * from here can be posted to it unchanged if the app ever grows a server.
  */
 
 export interface User {
@@ -13,15 +13,17 @@ export interface User {
   created_at: string;
 }
 
+/**
+ * A device is now just a label for grouping readings — there is no key,
+ * because nothing authenticates to anything.
+ */
 export interface Device {
   id: string;
   name: string;
-  key_prefix: string;
   notes: string | null;
   created_at: string;
-  key_rotated_at: string | null;
-  last_seen_at: string | null;
   reading_count: number;
+  first_reading_at: string | null;
   last_reading_at: string | null;
 }
 
@@ -170,17 +172,6 @@ export interface Design {
   longitude: number | null;
   place_label: string | null;
   created_at: string;
-  updated_at: string;
-  share_count?: number;
-}
-
-/** A shared design carries no owner identity and no internal id. */
-export interface SharedDesign {
-  name: string;
-  params: DesignParams;
-  latitude: number | null;
-  longitude: number | null;
-  place_label: string | null;
   updated_at: string;
 }
 

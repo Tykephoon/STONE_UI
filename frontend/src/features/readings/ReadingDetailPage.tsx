@@ -7,8 +7,8 @@
  */
 import { useMemo } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { getReading } from '../../api/readings';
-import type { TirePosition } from '../../api/types';
+import { getReading } from '../../data/store';
+import type { TirePosition } from '../../data/types';
 import { Meter } from '../../components/charts/Meter';
 import { ChevronLeftIcon, ChevronRightIcon, MapPinIcon } from '../../components/layout/Icons';
 import { LazyMapView } from '../../components/map/LazyMapView';

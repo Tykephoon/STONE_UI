@@ -7,9 +7,8 @@
  * a `404.html` copy of `index.html` as a second line of defence for anyone
  * arriving on a path-style URL.
  *
- * There are no route guards: this installation has no user accounts, so every
- * route is reachable by anyone who loads the page. The backend is the thing
- * that decides what is actually permitted, and it permits reads to everyone.
+ * There are no route guards and no authentication: the app has no server and
+ * all data lives in the visitor's own browser.
  *
  * Heavy routes are lazily loaded so the three.js and maplibre chunks are not
  * downloaded by someone who only ever opens the dashboard.
@@ -21,6 +20,7 @@ import { LoadingPanel } from './components/ui/Feedback';
 import { ToastProvider } from './components/ui/Toast';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { DevicesPage } from './features/devices/DevicesPage';
+import { ImportPage } from './features/import/ImportPage';
 import { NotFoundPage } from './features/misc/NotFoundPage';
 import { ReadingDetailPage } from './features/readings/ReadingDetailPage';
 import { ReadingsPage } from './features/readings/ReadingsPage';
@@ -43,7 +43,10 @@ export function App(): JSX.Element {
         <HashRouter>
           <Suspense fallback={<LoadingPanel label="Loading" />}>
             <Routes>
-              {/* A share link is a permalink to one design, rendered without the shell. */}
+              {/*
+                A share link carries the design itself in the URL, so this route
+                renders without the shell and needs no lookup.
+              */}
               <Route path="/shared/:token" element={<SharedDesignPage />} />
 
               <Route element={<AppShell />}>
@@ -51,6 +54,7 @@ export function App(): JSX.Element {
                 <Route path="/readings" element={<ReadingsPage />} />
                 <Route path="/readings/:id" element={<ReadingDetailPage />} />
                 <Route path="/devices" element={<DevicesPage />} />
+                <Route path="/import" element={<ImportPage />} />
                 <Route path="/studio" element={<StudioPage />} />
                 <Route path="/studio/:designId" element={<StudioPage />} />
               </Route>

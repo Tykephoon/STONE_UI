@@ -5,7 +5,7 @@
  * validator. Validation here exists so a bad value is caught before a round
  * trip, not so the server can trust the client.
  */
-import type { DesignParams } from '../../api/types';
+import type { DesignParams } from '../../data/types';
 
 export const DIMENSION_LIMITS = { min: 1, max: 10_000 } as const;
 export const RESOLUTION_LIMITS = { min: 2, max: 6 } as const;

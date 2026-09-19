@@ -11,17 +11,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ApiError } from '../../api/client';
-import {
-  createDesign,
-  createShareLink,
-  deleteDesign,
-  getDesign,
-  listDesigns,
-  revokeShareLinks,
-  updateDesign,
-} from '../../api/designs';
-import type { Design, DesignParams } from '../../api/types';
+import { DataError } from '../../data/store';
+import { createDesign, deleteDesign, getDesign, listDesigns, updateDesign } from '../../data/store';
+import type { Design, DesignParams } from '../../data/types';
 import { CubeIcon, DownloadIcon, PlusIcon, ShareIcon } from '../../components/layout/Icons';
 import { Button } from '../../components/ui/Button';
 import { CopyField } from '../../components/ui/CopyField';
@@ -36,13 +28,7 @@ import { formatRelative } from '../../lib/time';
 import { LocationPicker, type PickedLocation } from './LocationPicker';
 import { StoneViewer } from './StoneViewer';
 import { StudioControls } from './StudioControls';
-import {
-  buildParameterLink,
-  buildShareLink,
-  decodeParams,
-  exportGltf,
-  exportObj,
-} from './exporters';
+import { buildParameterLink, buildViewerLink, decodeParams, exportGltf, exportObj } from './exporters';
 import { DEFAULT_PARAMS, DIMENSION_LIMITS, sanitiseParams, seedFromCoordinates } from './types';
 import { useStoneGeometry } from './useStoneGeometry';
 import styles from './StudioPage.module.css';
@@ -81,7 +67,6 @@ export function StudioPage(): JSX.Element {
   const [saveOpen, setSaveOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Design | null>(null);
-  const [shareToken, setShareToken] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
   // Dimension inputs are held as strings so an intermediate value like "1"
@@ -101,7 +86,6 @@ export function StudioPage(): JSX.Element {
   const saveAction = useAction(createDesign);
   const updateActionState = useAction(updateDesign);
   const deleteActionState = useAction(deleteDesign);
-  const shareAction = useAction(createShareLink);
 
   /** Apply parameters wholesale — from a preset link, a saved design, or a reset. */
   const applyParams = useCallback((next: DesignParams) => {
@@ -166,7 +150,7 @@ export function StudioPage(): JSX.Element {
         if (!active) return;
         toast.error(
           'Design not found',
-          cause instanceof ApiError ? cause.message : 'It may have been deleted.',
+          cause instanceof DataError ? cause.message : 'It may have been deleted.',
         );
         navigate('/studio', { replace: true });
       });
@@ -284,30 +268,6 @@ export function StudioPage(): JSX.Element {
       toast.success('Design deleted');
     }
   }, [deleteTarget, deleteActionState, designsState, loadedDesign, navigate, toast]);
-
-  const handleShare = useCallback(async () => {
-    if (!loadedDesign) return;
-    const result = await shareAction.run(loadedDesign.id);
-    if (result.ok) {
-      setShareToken(result.data.share_token);
-      designsState.reload();
-    }
-  }, [loadedDesign, shareAction, designsState]);
-
-  const handleRevokeShares = useCallback(async () => {
-    if (!loadedDesign) return;
-    try {
-      const { revoked } = await revokeShareLinks(loadedDesign.id);
-      setShareToken(null);
-      designsState.reload();
-      toast.success(
-        'Links revoked',
-        `${revoked} share link${revoked === 1 ? '' : 's'} stopped working.`,
-      );
-    } catch {
-      toast.error('Could not revoke the links', 'Try again in a moment.');
-    }
-  }, [loadedDesign, designsState, toast]);
 
   const handleExport = useCallback(
     async (format: 'glb' | 'obj') => {
@@ -451,7 +411,6 @@ export function StudioPage(): JSX.Element {
                                 {Math.round(design.params.dimensions.width_mm)} ×{' '}
                                 {Math.round(design.params.dimensions.height_mm)} mm ·{' '}
                                 {formatRelative(design.updated_at)}
-                                {(design.share_count ?? 0) > 0 && ' · shared'}
                               </span>
                             </span>
                           </button>
@@ -612,52 +571,28 @@ export function StudioPage(): JSX.Element {
       >
         <div className={styles.shareBody}>
           <section>
-            <h3 className={styles.shareHeading}>Parameter link</h3>
+            <h3 className={styles.shareHeading}>Editable link</h3>
             <p className={styles.shareText}>
-              The whole design encoded in the URL. It needs no account and touches no server —
-              anyone who opens it regenerates the identical stone in their own browser.
+              The whole design encoded in the URL. Opening it loads these parameters into the
+              studio, ready to change. No server is involved — the recipient's browser regenerates
+              the identical stone from the link alone.
             </p>
             <CopyField value={buildParameterLink(params, name)} />
           </section>
 
           <section>
-            <h3 className={styles.shareHeading}>Saved share link</h3>
-            {loadedDesign ? (
-              <>
-                <p className={styles.shareText}>
-                  A read-only link to this saved design. It grants access to this one design and
-                  nothing else — not your account, not your other designs, not your telemetry.
-                </p>
-                {shareToken ? (
-                  <CopyField value={buildShareLink(shareToken)} />
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={handleShare}
-                    isLoading={shareAction.isPending}
-                  >
-                    Create share link
-                  </Button>
-                )}
-                {(loadedDesign.share_count ?? 0) > 0 && (
-                  <div className={styles.revokeRow}>
-                    <span className={styles.shareText}>
-                      {loadedDesign.share_count} active link
-                      {loadedDesign.share_count === 1 ? '' : 's'}.
-                    </span>
-                    <Button size="sm" variant="danger" onClick={handleRevokeShares}>
-                      Revoke all
-                    </Button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className={styles.shareText}>
-                Save the design first to create a revocable link.
-              </p>
-            )}
+            <h3 className={styles.shareHeading}>Read-only link</h3>
+            <p className={styles.shareText}>
+              The same design as a viewer page: orbit, zoom, and export, without the editing
+              controls. Useful for showing someone the result rather than the recipe.
+            </p>
+            <CopyField value={buildViewerLink(params, name)} />
           </section>
+
+          <p className={styles.shareNote}>
+            Both links carry the design itself, so they keep working forever and cannot be
+            revoked. Anyone you send one to can read it — do not treat a link as private.
+          </p>
         </div>
       </Modal>
 

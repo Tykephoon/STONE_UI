@@ -6,7 +6,7 @@
  * still loading, and users read that as "broken".
  */
 import type { ReactNode } from 'react';
-import { ApiError } from '../../api/client';
+import { DataError } from '../../data/store';
 import { Button } from './Button';
 import styles from './Feedback.module.css';
 
@@ -103,16 +103,14 @@ export function ErrorState({
   onRetry,
   compact,
 }: {
-  error: ApiError | Error | null;
+  error: DataError | Error | null;
   onRetry?: () => void;
   compact?: boolean;
 }): JSX.Element {
   const message =
-    error instanceof ApiError
+    error instanceof DataError
       ? error.message
       : 'Something went wrong. Please try again.';
-
-  const isOffline = error instanceof ApiError && error.code === 'network_error';
 
   return (
     <div
@@ -128,11 +126,6 @@ export function ErrorState({
       </span>
       <div className={styles.errorBody}>
         <p className={styles.errorMessage}>{message}</p>
-        {isOffline && (
-          <p className={styles.errorHint}>
-            The API may be starting up, or your connection may be down.
-          </p>
-        )}
       </div>
       {onRetry && (
         <Button size="sm" variant="secondary" onClick={onRetry}>

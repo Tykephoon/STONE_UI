@@ -26,7 +26,9 @@ service-account*.json
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
-data/
+# Scoped to the backend on purpose: a bare `data/` also swallows
+# frontend/public/data/, which ships the first-run sample dataset.
+backend/data/
 
 # logs
 *.log

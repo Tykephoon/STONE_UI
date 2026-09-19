@@ -2,13 +2,13 @@ name: Deploy frontend to GitHub Pages
 
 # Builds the static SPA and publishes it to Pages on every push to main.
 #
-# This workflow deliberately injects NO repository secret into the build.
-# Everything it produces is world-readable, so a secret here would be a
-# published secret. The only build-time input is VITE_API_BASE_URL, which is a
-# public URL and is therefore a repository *variable*, not a secret.
+# The build takes no configuration and no secrets. The app has no server, no
+# accounts, and no third-party keys, so there is nothing to inject — everything
+# it produces is public by definition, and a secret here would be a published
+# secret.
 #
-# If you ever find yourself reaching for `secrets.*` in the build step, the
-# feature needs a backend proxy route instead — see SECURITY.md.
+# If a future change makes this workflow need `secrets.*`, that is the signal
+# the design has gone wrong. See SECURITY.md.
 
 on:
   push:
@@ -57,21 +57,10 @@ jobs:
 
       - name: Build
         env:
-          # A public URL. Set it under Settings → Secrets and variables →
-          # Actions → Variables. It must exactly match an entry in the API's
-          # ALLOWED_ORIGINS, and the API origin must appear in the CSP that the
-          # build derives from it.
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
           VITE_ENVIRONMENT_LABEL: production
+        # `npm run build` ends with the bundle secret scan, which fails the
+        # build if anything credential-shaped reached the output.
         run: npm run build
-
-      - name: Fail the build if the bundle is missing its API origin
-        run: |
-          if [ -z "${{ vars.VITE_API_BASE_URL }}" ]; then
-            echo "::error::Repository variable VITE_API_BASE_URL is not set."
-            echo "Set it to the API origin, e.g. https://stone-api.fly.dev"
-            exit 1
-          fi
 
       # Deep links must survive a refresh. The app uses a hash router, so this
       # is belt-and-braces for anyone who lands on a path-style URL.

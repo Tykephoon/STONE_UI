@@ -5,7 +5,7 @@
  * and invisible in a list of four labelled numbers.
  */
 import { Meter, type MeterTone } from '../../components/charts/Meter';
-import type { Reading, TirePosition } from '../../api/types';
+import type { Reading, TirePosition } from '../../data/types';
 import { EMPTY, formatNumber, isPresent, kpaToPsi } from '../../lib/format';
 import styles from './TireGrid.module.css';
 

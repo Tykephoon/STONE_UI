@@ -8,11 +8,11 @@
  * benefit here.
  */
 import { type DependencyList, useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError } from '../api/client';
+import { DataError } from '../data/store';
 
 export interface AsyncState<T> {
   data: T | null;
-  error: ApiError | null;
+  error: DataError | null;
   /** True only on the first load, so a refresh does not blank the view. */
   isLoading: boolean;
   /** True on every load including background refreshes. */
@@ -28,7 +28,7 @@ export function useAsync<T>(
   const { enabled = true } = options;
 
   const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
+  const [error, setError] = useState<DataError | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -60,9 +60,9 @@ export function useAsync<T>(
         // An abort is the caller's own cleanup, not a failure to report.
         if (cause instanceof DOMException && cause.name === 'AbortError') return;
         setError(
-          cause instanceof ApiError
+          cause instanceof DataError
             ? cause
-            : new ApiError('internal_error', 'Something went wrong.', 0),
+            : new DataError('Something went wrong.'),
         );
       })
       .finally(() => {
@@ -95,7 +95,7 @@ export function useAsync<T>(
  * it immediately after `await run(...)` sees the previous value — which would
  * make a failed delete look like a successful one.
  */
-export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
+export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: DataError };
 
 /**
  * One-shot async action (submit, delete, rotate) with pending and error state.
@@ -105,11 +105,11 @@ export function useAction<Args extends unknown[], Result>(
 ): {
   run: (...args: Args) => Promise<ActionResult<Result>>;
   isPending: boolean;
-  error: ApiError | null;
+  error: DataError | null;
   reset: () => void;
 } {
   const [isPending, setIsPending] = useState(false);
-  const [error, setError] = useState<ApiError | null>(null);
+  const [error, setError] = useState<DataError | null>(null);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -130,9 +130,9 @@ export function useAction<Args extends unknown[], Result>(
       return { ok: true, data };
     } catch (cause) {
       const normalised =
-        cause instanceof ApiError
+        cause instanceof DataError
           ? cause
-          : new ApiError('internal_error', 'Something went wrong.', 0);
+          : new DataError('Something went wrong.');
       if (mounted.current) setError(normalised);
       return { ok: false, error: normalised };
     } finally {

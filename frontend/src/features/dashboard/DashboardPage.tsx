@@ -5,11 +5,10 @@
  * anything wrong with the tyres, how have the sensors trended, and where was
  * the data collected.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { listDevices } from '../../api/devices';
-import { getSeries, getStats, listReadings } from '../../api/readings';
-import type { MetricName } from '../../api/types';
+import { getSeries, getStats, listDevices, listReadings, onDataChange } from '../../data/store';
+import type { MetricName } from '../../data/types';
 import { StatTile } from '../../components/charts/StatTile';
 import { TimeSeriesChart } from '../../components/charts/TimeSeriesChart';
 import { FilterBar } from '../../components/filters/FilterBar';
@@ -19,9 +18,7 @@ import { Card, CardBody, CardHeader } from '../../components/ui/Card';
 import { EmptyState, ErrorState, Skeleton, StatusDot } from '../../components/ui/Feedback';
 import { Toggle } from '../../components/ui/Form';
 import { useAsync } from '../../hooks/useAsync';
-import { useInterval } from '../../hooks/useInterval';
 import { useLocalPreference } from '../../hooks/useLocalPreference';
-import { config } from '../../config';
 import { EMPTY, formatCount, formatMetric, formatNumber, formatSkew } from '../../lib/format';
 import {
   type RangePreset,
@@ -43,15 +40,11 @@ const TIRE_PRESSURE_METRICS: MetricName[] = [
 
 const TIRE_LABELS = ['Front left', 'Front right', 'Rear left', 'Rear right'];
 
-/** How recent a reading must be for the device to count as live. */
-const LIVE_THRESHOLD_MS = 5 * 60_000;
-
 export function DashboardPage(): JSX.Element {
   const navigate = useNavigate();
 
   const [range, setRange] = useLocalPreference<RangePreset>('dashboard.range', '24h');
   const [deviceId, setDeviceId] = useLocalPreference<string>('dashboard.device', '');
-  const [livePolling, setLivePolling] = useLocalPreference('dashboard.live', true);
   const [showPsi, setShowPsi] = useLocalPreference('dashboard.psi', false);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
@@ -96,19 +89,19 @@ export function DashboardPage(): JSX.Element {
     [filters, refreshNonce],
   );
 
-  // Live mode simply bumps a nonce that every query depends on.
-  useInterval(
-    useCallback(() => setRefreshNonce((value) => value + 1), []),
-    livePolling ? config.livePollIntervalMs : null,
-  );
+  /*
+    Data only changes when the user imports or deletes something, so the
+    dashboard subscribes to those events rather than polling — there is no
+    server that could produce a new reading behind its back.
+  */
+  const reloadAll = useCallback(() => setRefreshNonce((value) => value + 1), []);
+  useEffect(() => onDataChange(reloadAll), [reloadAll]);
 
   const stats = statsState.data;
   const readings = recentState.data?.readings ?? [];
   const latest = readings[0] ?? null;
 
   const lastRecordedAt = stats?.last_recorded_at ?? null;
-  const isLive =
-    lastRecordedAt !== null && Date.now() - Date.parse(lastRecordedAt) < LIVE_THRESHOLD_MS;
 
   /** Average of the four wheels, used as the tyre-target reference. */
   const averageTarget = useMemo(() => {
@@ -183,11 +176,11 @@ export function DashboardPage(): JSX.Element {
       <div className={styles.page}>
         <EmptyState
           icon={<InboxIcon size={22} />}
-          title="No devices registered yet"
-          description="Register a Pico to get a device key, then point it at the ingest endpoint. Readings will appear here automatically."
+          title="No data yet"
+          description="Import a CSV of readings, paste rows from a spreadsheet, or enter one by hand. Everything stays in this browser."
           action={
-            <Link to="/devices" className={styles.ctaLink}>
-              Register a device →
+            <Link to="/import" className={styles.ctaLink}>
+              Import data →
             </Link>
           }
         />
@@ -202,8 +195,8 @@ export function DashboardPage(): JSX.Element {
           <h1 className={styles.title}>Dashboard</h1>
           <p className={styles.subtitle}>
             <span className={styles.liveIndicator}>
-              <StatusDot tone={isLive ? 'good' : 'neutral'} pulse={isLive && livePolling} />
-              {isLive ? 'Receiving data' : 'No recent readings'}
+              <StatusDot tone={stats && stats.total > 0 ? 'good' : 'neutral'} />
+              {formatCount(stats?.total ?? 0)} readings stored locally
             </span>
             {lastRecordedAt && (
               <>
@@ -225,9 +218,7 @@ export function DashboardPage(): JSX.Element {
         onDeviceChange={setDeviceId}
         range={range}
         onRangeChange={setRange}
-      >
-        <Toggle label="Live" checked={livePolling} onChange={setLivePolling} />
-      </FilterBar>
+      />
 
       {statsState.error && <ErrorState error={statsState.error} onRetry={statsState.reload} />}
 

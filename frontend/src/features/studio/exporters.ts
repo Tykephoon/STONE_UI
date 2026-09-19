@@ -11,7 +11,7 @@ import type { BufferGeometry } from 'three';
 import { Mesh, MeshStandardMaterial } from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
-import type { DesignParams } from '../../api/types';
+import type { DesignParams } from '../../data/types';
 import { sanitiseParams } from './types';
 
 function triggerDownload(blob: Blob, filename: string): void {
@@ -226,8 +226,13 @@ export function buildParameterLink(params: DesignParams, name: string): string {
   return `${origin}${pathname}#/studio?d=${encodeParams(params, name)}`;
 }
 
-/** Absolute link to a backend-persisted share token. */
-export function buildShareLink(token: string): string {
+/**
+ * Absolute link to the read-only viewer.
+ *
+ * Carries the same encoded parameters as the editable link, so it works with no
+ * server and cannot be revoked — the design travels in the URL.
+ */
+export function buildViewerLink(params: DesignParams, name: string): string {
   const { origin, pathname } = window.location;
-  return `${origin}${pathname}#/shared/${token}`;
+  return `${origin}${pathname}#/shared/${encodeParams(params, name)}`;
 }

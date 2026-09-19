@@ -1,10 +1,9 @@
 /**
  * MapLibre wrapper.
  *
- * The style document and every tile come from the backend proxy, so no map
- * credential exists in this bundle. `transformRequest` attaches the session
- * cookie because MapLibre issues tile requests through its own fetch, which
- * does not inherit the API client's defaults.
+ * The style is built in the browser and points straight at OpenStreetMap's
+ * keyless tiles — see `data/geo.ts` for why that is acceptable here and what
+ * would have to change if a keyed provider were ever adopted.
  *
  * Two modes:
  *   - `points`  plots telemetry readings, with optional selection
@@ -13,7 +12,7 @@
 import maplibregl, { type LngLatLike, type Map as MapLibreMap, type Marker } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { mapStyleUrl, transformMapRequest } from '../../api/geo';
+import { buildMapStyle } from '../../data/geo';
 import styles from './MapView.module.css';
 
 export interface MapPoint {
@@ -84,11 +83,10 @@ export function MapView({
     try {
       map = new maplibregl.Map({
         container,
-        style: mapStyleUrl,
+        style: buildMapStyle() as maplibregl.StyleSpecification,
         center: initialCenter,
         zoom: initialZoom,
         attributionControl: { compact: true },
-        transformRequest: transformMapRequest,
       });
     } catch {
       setStatus('failed');
@@ -99,8 +97,8 @@ export function MapView({
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     map.on('load', () => setStatus('ready'));
-    // A failed style fetch means the proxy is unreachable or the session
-    // lapsed. Surface a fallback rather than an empty grey box.
+    // Individual tile failures are common and self-healing; only a style-level
+    // failure means the map will never render.
     map.on('error', (event) => {
       if (event.error && String(event.error.message ?? '').includes('style')) {
         setStatus('failed');
@@ -276,7 +274,7 @@ export function MapView({
         <div className={styles.overlay} role="status">
           <p className={styles.failedTitle}>Map unavailable</p>
           <p className={styles.failedBody}>
-            The tile proxy could not be reached. Coordinates are still listed below.
+            OpenStreetMap could not be reached. Coordinates are still listed below.
           </p>
         </div>
       )}

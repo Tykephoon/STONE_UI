@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BufferAttribute, BufferGeometry } from 'three';
-import type { DesignParams } from '../../api/types';
+import type { DesignParams } from '../../data/types';
 import type {
   GenerateRequest,
   GenerateResponse,

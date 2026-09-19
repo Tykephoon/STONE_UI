@@ -1,56 +1,34 @@
 # Stone
 
-Telemetry dashboard and procedural 3D stone studio for Raspberry Pi Pico field
-devices.
+Telemetry dashboard and procedural 3D stone studio. Runs entirely in the
+browser, hosted free on GitHub Pages.
 
-Two deployables:
+**No server. No accounts. No hosting bill.** Data lives in your browser, arrives
+by file import or manual entry, and leaves by export.
 
-| Part | Stack | Host |
-|---|---|---|
-| `frontend/` | React 18 · TypeScript · Vite · three.js · MapLibre | GitHub Pages (static) |
-| `backend/` | Fastify · TypeScript · SQLite (WAL) | Fly.io (Docker + volume) |
-
-The device posts readings to the backend over HTTPS with a device key. The
-frontend never talks to the device, and never to any third party directly.
+- **Live site:** https://tykephoon.github.io/STONE_UI/
+- Stack: React 18 · TypeScript · Vite · three.js · MapLibre
 
 ---
 
-## No accounts: read this before deploying
+## How it works
 
-There is **no sign-in**. Anyone who knows the API URL can read every reading —
-including **the GPS coordinates of every reading** — and can create, edit, or
-delete saved 3D designs.
+```
+GitHub Pages ──► static bundle ──► IndexedDB in your browser
+                                    ▲
+                                    └── CSV / JSON import, or typed by hand
+```
 
-Making the GitHub repository private does not change that. A private repo hides
-the source, not the deployed site, and not the API, which is a separate
-deployment on a different host. (On a Free plan, a private repo disables GitHub
-Pages entirely; on a paid plan the site publishes and stays world-readable.)
+There is nothing to deploy beyond the static site, and nothing to pay for. Maps
+come from OpenStreetMap, which needs no key.
 
-What **is** still protected: writing readings requires a device key, and there
-is no HTTP route that issues one. Provisioning is a server-side command, so a
-stranger cannot inject fake telemetry into your database.
+### What that costs you
 
-If your location history is sensitive, this is the wrong model.
-[SECURITY.md](./SECURITY.md) spells out the exposure and ends with the smallest
-change that restores authentication.
-
----
-
-## The one rule
-
-**Nothing in `frontend/` may contain a credential.** Everything the build emits
-is served publicly from GitHub Pages — treat the bundle as a published
-document. No API keys, tokens, connection strings, service-account files, or
-signing secrets in source, in build-time environment variables, in committed
-config, or in comments.
-
-The only runtime configuration the bundle carries is the public API base URL
-and non-sensitive feature flags.
-
-Every credentialed call is proxied. The backend holds the secret and makes the
-outbound request on the caller's behalf. `npm run build` runs a bundle scanner
-that fails the build if a likely secret appears in the output, and the deploy
-workflow runs the same check.
+- **Data is per-browser.** It does not follow you to another machine or another
+  browser unless you export a backup and import it there.
+- **Clearing site data deletes it.** The export file is the only copy.
+- **No live device ingest.** A Pico cannot POST to this; see
+  [Live ingest](#live-ingest-optional) if that changes.
 
 ---
 
@@ -59,259 +37,161 @@ workflow runs the same check.
 Requires Node 22+.
 
 ```bash
-# --- backend -------------------------------------------------------------
-cd backend
-npm install
-cp .env.example .env          # defaults work for local development
-npm run seed                  # two simulated devices, three weeks of readings
-npm run dev                   # http://localhost:8080
-
-# --- frontend (second terminal) -----------------------------------------
 cd frontend
 npm install
-cp .env.example .env          # points at http://localhost:8080
-npm run dev                   # http://localhost:5173
+npm run dev        # http://localhost:5173
 ```
 
-Open http://localhost:5173. There is no sign-in. The seed generates three weeks
-of simulated telemetry across two devices — including a slow leak on one
-rear-left tyre — so the dashboard has something real to render before hardware
-exists.
+That is the whole setup. On first run the app loads a bundled sample dataset —
+three weeks of simulated telemetry across two devices, including a slow leak on
+one rear-left tyre — so the dashboard has something real to render immediately.
+
+Delete it any time from **Import → Delete everything**.
+
+---
+
+## Getting your own data in
+
+Three ways, all on the **Import** page.
+
+**1. Upload a file.** Drop a CSV, or click to choose one.
+
+**2. Paste rows.** Copy straight out of a spreadsheet into the paste box.
+
+**3. Type a reading.** A form for a single value read off a gauge.
+
+Nothing is saved until you have seen the preview: how many rows parsed, which
+columns were recognised, and exactly which rows had problems and why.
+
+### CSV format
+
+Only three columns are required:
+
+| Column | Notes |
+|---|---|
+| `recorded_at` | ISO-8601 (`2026-09-19T10:04:00Z`) or `YYYY-MM-DD HH:MM:SS`, read as UTC |
+| `latitude` | −90 to 90 |
+| `longitude` | −180 to 180 |
+
+Everything else is optional: `altitude_m`, `gps_accuracy_m`, `ambient_temp_c`,
+`humidity_pct`, `barometric_pressure_hpa`, `battery_voltage_v`, `accel_x_g`
+(and `_y_`, `_z_`), plus `tire_fl_pressure_kpa` / `tire_fl_temp_c` style names
+for all four wheels (`fl`, `fr`, `rl`, `rr`).
+
+Common aliases are recognised automatically — `lat`, `lon`, `timestamp`,
+`temperature`, `battery`, `front_left_pressure`, and others. Case and spacing do
+not matter.
+
+**Unrecognised columns are kept**, not dropped. They appear on each reading's
+detail page alongside the raw record.
+
+```csv
+recorded_at,latitude,longitude,ambient_temp_c,tire_fl_pressure_kpa,rssi_dbm
+2026-09-19T10:04:00Z,42.3398,-71.0892,18.4,228.4,-58
+2026-09-19T10:09:00Z,42.3401,-71.0885,18.5,228.1,-61
+```
+
+There is a **Download a template** button on the Import page.
+
+### Validation
+
+Values are range-checked on the way in, so a unit mix-up is caught rather than
+charted. A tyre pressure of 2200 is rejected as a psi/kPa confusion; a latitude
+of 999 is rejected outright. A bad row is skipped and reported with its line
+number — the rest of the file still imports.
+
+An empty cell becomes "no reading", never zero. A missing sensor leaves a gap in
+the chart rather than a line dropping to the axis.
+
+### Backups
+
+**Import → Export backup** writes a single JSON file containing every reading,
+device, and saved design. Restoring it on another machine is how data moves.
+Re-importing the same file is safe: records merge by id rather than duplicating.
 
 ---
 
 ## Commands
 
-### Backend
-
 | Command | Does |
 |---|---|
-| `npm run dev` | Watch-mode server on `:8080` |
-| `npm test` | Typecheck plus 48 tests (access model, ingest) |
-| `npm run typecheck` | Types only, including the test files |
-| `npm run build` | Compile to `dist/` |
-| `npm start` | Run the compiled server |
-| `npm run seed` | Simulated devices and telemetry (`--days`, `--reset`) |
-| `npm run device` | Register, rotate, and remove devices |
-
-### Frontend
-
-| Command | Does |
-|---|---|
-| `npm run dev` | Vite dev server on `:5173` |
-| `npm test` | 13 generator tests (determinism, dimensions, untrusted input) |
-| `npm run typecheck` | All four TS projects |
+| `npm run dev` | Dev server on `:5173` |
+| `npm test` | 54 tests — CSV import, generator determinism, sample data |
+| `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
 | `npm run preview` | Serve the built bundle locally |
 
 ---
 
-## Managing devices
+## Deploying
 
-A device key is the only credential in the system, and it is what stops a
-stranger writing to your readings table. It is therefore minted locally rather
-than through the API — there is no HTTP route that creates one.
+Already configured. Push to `main` and the workflow builds, tests, scans, and
+publishes.
 
-```bash
-npm run device -- list
-npm run device -- add "Pico-01 · Trail Rig" --notes "BME280 + MPU-6050"
-npm run device -- rotate dev_xxxxxxxxxxxxxxxxxx
-npm run device -- remove dev_xxxxxxxxxxxxxxxxxx
-```
+One-time setup:
 
-On Fly.io, run it against the live volume:
+1. **Settings → Pages → Source: GitHub Actions**
 
-```bash
-fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
-```
+That is the entire list. The build takes no configuration and no secrets.
 
-Keys are shown once and stored only as a SHA-256, so a lost key is rotated
-rather than recovered. Rotating invalidates the previous key immediately.
-
----
-
-## Data model
-
-```
-devices ─── readings        (append-only)
-designs ─── design_shares
-```
-
-There is no users table. A **device** has an id, a display name, the SHA-256 of
-its key, a non-secret key prefix for identification, and timestamps.
-
-A **reading** belongs to exactly one device and records:
-
-- `recorded_at` (device clock) and `received_at` (server clock), both UTC, plus
-  the computed `clock_skew_ms` between them
-- `latitude`, `longitude`, optional `altitude_m` and `gps_accuracy_m`
-- per-wheel pressure and temperature for four positions
-- ambient temperature, humidity, barometric pressure, three-axis acceleration,
-  battery voltage
-- `extra` — a JSON column holding every field the device sent that the schema
-  does not name, so unknown keys are preserved rather than dropped
-
-**Readings are immutable.** A SQLite `BEFORE UPDATE` trigger raises on any
-attempt to modify one, and no endpoint exposes a mutation. Deleting a device via
-the CLI cascades to its readings — immutable is not the same as undeletable.
-
----
-
-## Posting readings from a device
-
-```http
-POST https://your-api.fly.dev/api/ingest
-Authorization: Bearer stk_<device-key>
-Content-Type: application/json
-```
-
-```json
-{
-  "recorded_at": "2026-09-19T10:04:00Z",
-  "latitude": 42.3398,
-  "longitude": -71.0892,
-  "altitude_m": 14.2,
-  "gps_accuracy_m": 4.5,
-  "tires": {
-    "front_left":  { "pressure_kpa": 228.4, "temp_c": 31.2 },
-    "front_right": { "pressure_kpa": 229.1, "temp_c": 30.8 },
-    "rear_left":   { "pressure_kpa": 235.0, "temp_c": 33.4 },
-    "rear_right":  { "pressure_kpa": 234.2, "temp_c": 33.1 }
-  },
-  "sensors": {
-    "ambient_temp_c": 18.4,
-    "humidity_pct": 61.2,
-    "barometric_pressure_hpa": 1014.2,
-    "accel_x_g": 0.02,
-    "accel_y_g": -0.01,
-    "accel_z_g": 1.00,
-    "battery_voltage_v": 12.4
-  },
-  "firmware": "1.4.2",
-  "rssi_dbm": -58
-}
-```
-
-- Send one reading, or a batch as `{"readings": [...]}` (default max 200).
-- A batch is all-or-nothing: one invalid reading rejects the whole request.
-- Unrecognised top-level keys (`firmware`, `rssi_dbm` above) land in `extra` and
-  appear on the reading detail page.
-- Validation failures return `422` with a per-field `issues` array naming the
-  offending key.
-- Rate-limited per device (default 120/min). A throttled device gets `429` with
-  a `Retry-After` header.
-
----
-
-## API
-
-```
-GET    /api/devices              GET    /api/devices/:id      (read-only)
-
-GET    /api/readings             GET    /api/readings/:id
-GET    /api/readings/stats       GET    /api/readings/series  GET /api/readings/export
-
-POST   /api/ingest               (device key required)
-
-GET    /api/designs              POST   /api/designs          GET    /api/designs/:id
-PUT    /api/designs/:id          DELETE /api/designs/:id
-POST   /api/designs/:id/share    DELETE /api/designs/:id/share
-GET    /api/share/:token
-
-GET    /api/geo/style.json       GET    /api/geo/tiles/:z/:x/:y   GET /api/geo/search
-
-GET    /health
-```
-
-`POST /api/ingest` is the only route that requires a credential. Everything else
-is open.
-
-There is deliberately **no** route that creates, rotates, or deletes a device —
-those return 404 because no such route is registered. That is what keeps the
-ingest key meaningful, and a test asserts it.
+Deep links work: the app uses a hash router, and the build also writes a
+`404.html` copy of `index.html`. Asset paths are relative, so the same bundle
+runs at `https://tykephoon.github.io/STONE_UI/` or at a domain root unchanged.
 
 ---
 
 ## The studio
 
 A stone is **parameters, not geometry**. The mesh is regenerated
-deterministically in the browser from a seed, so a saved design is a few
-hundred bytes and a share link reproduces exactly what its author saw.
+deterministically in the browser from a seed, so a saved design is a few hundred
+bytes and a shared link reproduces exactly what its author saw.
 
-- The seed comes from the chosen coordinates, rounded to five decimal places
-  (about a metre). The same place always yields the same stone.
+- The seed comes from coordinates you pick on a map, rounded to five decimal
+  places. The same place always yields the same stone.
 - Generation runs in a web worker and is debounced, so dragging a slider does
-  not stall the UI. Level 6 (~82,000 triangles) generates in roughly 150 ms.
-- The mesh is scaled so its bounding box **exactly** matches the requested
-  length, width, and height — the dimension fields are not decorative.
+  not stall the interface. Level 6 (~82,000 triangles) takes about 150 ms.
+- The mesh is scaled so its bounding box **exactly** matches the length, width,
+  and height you ask for — the dimension fields are not decorative.
 - Pipeline: subdivided icosahedron → layered gradient-noise displacement →
-  optional convex-polytope intersection for fracture faces → taper and flatten
-  → exact rescale → normals blended smooth-to-flat, plus vertex colours for
+  optional convex-polytope intersection for fracture faces → taper and flatten →
+  exact rescale → normals blended smooth-to-flat, plus vertex colours for
   mineral veining and crevice shading.
 
-Export is glTF (`.glb`) or OBJ, in millimetres at the origin with the viewer's
-presentation transform removed. Sharing is either an encoded parameter URL (no
-server involved) or a revocable backend share token.
+Export is glTF (`.glb`) or OBJ, in millimetres at the origin.
+
+**Sharing** encodes the whole design into the URL — an editable link that opens
+in the studio, or a read-only viewer link. Both work with no server, which also
+means they cannot be revoked. Treat a link as public.
 
 ---
 
-## Deploying
+## Live ingest (optional)
 
-### Backend → Fly.io
+If a real Pico ever needs to POST readings, `backend/` holds a complete Fastify
++ SQLite API that does exactly that: device-key authentication, range
+validation, batching, rate limiting, and immutable rows.
+
+It is **not used by the frontend** and needs a host that costs money. It is kept
+because the ingest endpoint is the one thing a browser cannot do, and rebuilding
+it later would be wasted work.
 
 ```bash
 cd backend
-fly launch --no-deploy            # or `fly apps create stone-api`
-fly volumes create stone_data --size 1 --region bos
-
-# Secrets are set once and live only in Fly's secret store.
-fly secrets set MAP_TILES_URL='https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.png?key={key}'
-fly secrets set MAP_TILES_KEY='your-maptiler-key'
-fly secrets set GEOCODE_URL='https://api.maptiler.com/geocoding/{q}.json?key={key}'
-fly secrets set GEOCODE_KEY='your-maptiler-key'
-
-# Point CORS at your Pages origin before the first deploy.
-fly secrets set ALLOWED_ORIGINS='https://tykephoon.github.io'
-
-fly deploy
-
-# Register your first device against the live volume.
-fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
+npm install && npm test     # 48 tests
+npm run seed                # simulated telemetry
+npm run dev                 # http://localhost:8080
+npm run device -- add "Pico-01"
 ```
 
-`fly.toml` pins `min_machines_running = 1`: SQLite lives on one volume, and
-exactly one machine may hold the write lock.
-
-Map credentials are optional. With none configured the proxy falls back to
-keyless OpenStreetMap tiles and Nominatim, which is fine for development but is
-not an appropriate production tile source under OSM's usage policy.
-
-### Frontend → GitHub Pages
-
-1. **Settings → Pages → Source: GitHub Actions.**
-2. **Settings → Secrets and variables → Actions → Variables** — add
-   `VITE_API_BASE_URL` = your API origin, e.g. `https://stone-api.fly.dev`.
-   A **variable**, not a secret: it is a public URL, and the build refuses to
-   consume secrets.
-3. Push to `main`. The workflow typechecks, tests, builds, scans the bundle for
-   secrets, copies `index.html` to `404.html`, and publishes.
-
-The app uses a hash router, so deep links survive a refresh with no server
-rewrite; the `404.html` copy covers anyone arriving on a path-style URL. Asset
-paths are relative (`base: './'`), so the same bundle works at
-`https://tykephoon.github.io/STONE_UI/` and at a domain root without a rebuild.
-
-Finally, set the backend's `ALLOWED_ORIGINS` to exactly the Pages origin — it
-must match scheme, host, and port, and the API's Content-Security-Policy is
-derived from the same value at build time.
+Readings collected by it can be exported to CSV and imported here, so the two
+halves interoperate without the frontend depending on the backend.
 
 ---
 
 ## Branding
 
-Drop replacements into `frontend/public/` using these exact filenames; no code
-changes needed.
+Drop replacements into `frontend/public/`; no code changes needed.
 
 | File | Used for |
 |---|---|
@@ -326,27 +206,24 @@ The placeholders currently in place are clearly marked as such.
 ## Project layout
 
 ```
-backend/
-  src/
-    config.ts            Environment parsing — every secret enters here
-    app.ts               Fastify factory: CORS, rate limits, error handler
-    db/                  Connection and forward-only migrations
-    domain/              Zod schemas — the authoritative validators
-    lib/                 Hashing, errors, rate limiting, ids
-    routes/              One module per resource
-    scripts/seed.ts      Simulated telemetry generator
-    scripts/device.ts    Device provisioning CLI
-  test/                  access model · ingest
-
 frontend/
   scripts/check-bundle-secrets.mjs   Pre-publish bundle audit
+  public/data/sample-telemetry.json  First-run dataset
   src/
-    api/                 The only place that performs network calls
-    components/          ui · charts · layout · map · filters
-    features/            dashboard · readings · devices · studio
+    data/              Everything that touches storage lives here
+      db.ts              IndexedDB wrapper
+      store.ts           Queries, mutations, in-memory cache
+      csv.ts             Parsing, column mapping, validation, export
+      sample.ts          First-run dataset loader
+      geo.ts             OpenStreetMap tiles and geocoding
+      export.ts          File downloads and backups
+    components/        ui · charts · layout · map · filters
+    features/          dashboard · readings · devices · import · studio
     hooks/  lib/  styles/
-  test/                  Generator determinism and untrusted input
+  test/                CSV import · generator · sample data
+
+backend/               Optional. Unused by the frontend — see Live ingest.
 ```
 
-`src/api/` is the single home for endpoints and request logic — no UI component
-calls `fetch` directly.
+`src/data/` is the single home for storage and network access; no UI component
+reads or writes directly.

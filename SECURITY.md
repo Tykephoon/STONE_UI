@@ -1,257 +1,224 @@
 # Security
 
-## Read this first: what this deployment exposes
+## The short version
 
-**This installation has no user accounts.** That is a deliberate choice, and it
-has consequences worth stating plainly rather than burying:
+The deployed app is a **static bundle with no server and no accounts**. It holds
+no credentials because it has none to hold, and it stores your data in your own
+browser rather than on someone else's computer.
 
-- **Anyone who knows the API URL can read every reading you have collected** —
-  timestamps, sensor values, and **the GPS coordinates of every reading**.
-- **Anyone can create, edit, and delete saved 3D designs.** The design library
-  is shared and writable.
-- **A private GitHub repository does not change any of this.** It hides the
-  source, not the deployed site, and not the API — which is a separate
-  deployment on a different host. On a Free plan, making the repo private
-  disables GitHub Pages entirely; on a paid plan the site is published and
-  world-readable regardless.
+That removes most of the attack surface a web app usually has — there is no
+session to steal, no API to authenticate against, no database to breach. What
+remains is worth understanding.
 
-If the location history in your telemetry is sensitive — and location history
-usually is — this model is the wrong one. Restoring authentication is the fix;
-see *Putting auth back* at the end.
+| Question | Answer |
+|---|---|
+| Where is my telemetry? | IndexedDB, in the browser you imported it into. It never leaves. |
+| Who else can see it? | Nobody, unless they have access to your device or browser profile. |
+| Are there any API keys? | None. Maps use OpenStreetMap, which is keyless. |
+| Does anything phone home? | Only map tiles and place searches, both to OpenStreetMap. |
+| Is the site itself private? | No. The **site** is public; your **data** is not in it. |
 
-### What is still protected
+---
 
-- **Writing readings requires a device key.** Nobody can inject fake telemetry
-  into your database without one.
-- **No credential ships in the browser bundle.** Map and geocoding keys stay on
-  the server.
-- **Readings cannot be altered or deleted through the API by anyone.**
+## What "no server" does and does not protect
+
+**Does protect.** Your readings and their GPS coordinates are never transmitted
+anywhere. There is no server to compromise, no database to dump, and no
+operator — including the person who deployed the site — who can read your data.
+
+**Does not protect.** Anyone with access to your unlocked device can open the
+app and read everything, exactly as they could open your files. Browser storage
+is not encrypted at rest and is not protected by a password. If the machine is
+shared, treat the data as visible to whoever else uses it.
+
+**Also worth knowing.** A private GitHub repository would hide the source, not
+the published site. GitHub Pages sites are world-readable regardless of
+repository visibility (and on a Free plan, making the repo private disables
+Pages entirely). The site being public is fine here precisely *because* it
+carries no data — only code.
 
 ---
 
 ## Where secrets live
 
-| Secret | Where it is set | Reaches the browser? |
+Nowhere. There are none.
+
+- **No API keys.** Map tiles come from `tile.openstreetmap.org` and place search
+  from `nominatim.openstreetmap.org`. Both are keyless.
+- **No passwords or sessions.** There are no accounts.
+- **No build-time secrets.** The deploy workflow injects nothing; the build takes
+  no configuration at all.
+
+The bundle's only inlined value is an optional cosmetic environment label.
+
+### If a keyed provider is ever adopted
+
+A keyed map provider (MapTiler, Mapbox) would be a meaningful upgrade in tile
+quality, and it is the one change most likely to reintroduce a credential.
+**Do not put the key in the frontend** — Vite inlines `VITE_*` variables as
+literal strings and the bundle is world-readable, so it would be published the
+moment it deployed.
+
+The correct shape is the proxy that already exists in `backend/src/routes/geo.ts`:
+the key stays in the server's environment, the browser calls
+`/api/geo/tiles/:z/:x/:y`, and the server substitutes the key. That code is
+still in the repository for exactly this reason.
+
+If a browser-side SDK key genuinely cannot be avoided, treat it as public:
+restrict it by HTTP referrer to the Pages origin, enable only the APIs in use,
+set hard daily quotas and billing alerts, and document it as exposed by design.
+Never use a server-side or unrestricted key that way.
+
+---
+
+## Outbound network traffic
+
+The app contacts exactly two hosts, both declared in one place —
+`EXTERNAL_HOSTS` in `frontend/vite.config.ts` — which is also what generates the
+Content-Security-Policy. Adding a host there means adding a party that can
+observe traffic from the page.
+
+| Host | Why | What it sees |
 |---|---|---|
-| `MAP_TILES_KEY` | `fly secrets set` → backend env | No — substituted server-side |
-| `GEOCODE_KEY` | `fly secrets set` → backend env | No — substituted server-side |
-| Device keys | Only the SHA-256 is stored in the database | Shown once by the CLI, never by the API |
-| Share tokens | Only the SHA-256 is stored | Returned once when minted |
+| `tile.openstreetmap.org` | Map tiles | Which map areas you view, and your IP |
+| `nominatim.openstreetmap.org` | Place search in the studio | Your search terms, and your IP |
 
-The frontend bundle carries exactly two values: the public API base URL and a
-cosmetic environment label. Both are `VITE_*` variables, both are inlined as
-literal strings, and both are public by design.
+Neither receives your telemetry. Map tiles are requested for the area you are
+viewing, which does reveal roughly where your readings are — if that matters,
+the map can be left closed and every other view still works.
 
-There is **no password hashing, no session store, and no cookie** anywhere in
-this codebase. The API sets no `Set-Cookie` header on any response.
-
-### Why there is no map key in the browser
-
-Tiles and geocoding are keyed services, so the naive implementation puts a key
-in the client. This project does not:
-
-- `GET /api/geo/style.json` — a MapLibre style whose tile URLs point back at us
-- `GET /api/geo/tiles/:z/:x/:y` — server-side fetch to the upstream provider
-  with the key from the environment, streamed back
-- `GET /api/geo/search?q=` — proxied geocoding, reshaped into a fixed structure
-
-If a future feature genuinely cannot avoid a browser-side map SDK key, treat it
-as public: restrict by HTTP referrer to the Pages origin, enable only the APIs
-in use, set hard daily quotas and billing alerts, and document it in the README
-as exposed by design. Never use a server-side or unrestricted key that way. No
-such key exists in this project today.
+Nominatim's usage policy allows one request per second; `data/geo.ts` enforces
+that with a queue rather than trusting the UI to.
 
 ---
 
-## The device key is the whole write-side security model
+## Content-Security-Policy
 
-Reads are public, so the only thing standing between a stranger and your
-readings table is that they cannot obtain a device key. Two properties keep
-that true:
-
-1. **There is no HTTP route that creates, rotates, or deletes a device.** Not a
-   protected one — none at all. `POST /api/devices` returns 404 because no such
-   route is registered. Provisioning is a local command:
-
-   ```bash
-   npm run device -- add "Pico-01 · Trail Rig"
-   npm run device -- rotate dev_xxxxxxxxxxxxxxxxxx
-   npm run device -- remove dev_xxxxxxxxxxxxxxxxxx
-   ```
-
-   Minting a key therefore requires access to the server or its volume, not
-   merely access to the API. On Fly.io:
-
-   ```bash
-   fly ssh console -C "node /app/dist/scripts/device.js add 'Pico-01'"
-   ```
-
-2. **Keys are 256-bit CSPRNG output, stored only as SHA-256.** A database leak
-   yields no usable keys, and a lost key is rotated rather than recovered.
-
-`backend/test/ingest.test.ts` asserts property 1 directly: it attempts `POST`,
-`PATCH`, `DELETE`, and `PUT` against the device routes and requires a 404 from
-each. If someone later adds a provisioning endpoint, that test fails.
-
-A slow hash is deliberately not used here. Argon2 is the right answer for
-human-chosen passwords; for a full-entropy machine key there is no dictionary to
-search, so it would add latency to every ingest request and buy nothing.
-
----
-
-## What protects the rest
-
-Reads and design writes are unauthenticated, so the controls are structural
-rather than identity-based.
-
-- **Rate limiting.** A global IP-keyed limiter (300 requests/minute), plus
-  per-device ingest limits (120/minute) and separate per-IP ceilings on the map
-  proxy (600 tiles/minute, 30 searches/minute). With no accounts these are the
-  main backstop against abuse.
-- **A library ceiling.** The design table is capped at 200 rows so a script
-  cannot fill the volume.
-- **Bounded payloads.** 256 KiB for most routes, 1 MiB for ingest, 200 readings
-  per batch, 64 KiB for a single `extra` blob.
-- **CORS with an explicit allowlist**, and `credentials: false` because nothing
-  sends a cookie. An unknown origin receives no CORS headers at all. This stops
-  casual embedding; it is not an access control, since anything that is not a
-  browser ignores CORS entirely.
-
----
-
-## Input handling and output hygiene
-
-- **Validation.** Zod schemas are the authoritative validator, with physical
-  plausibility ranges on every sensor field so a unit mix-up (psi sent as kPa)
-  is rejected rather than stored. The client validates too, but only for speed
-  of feedback.
-- **SQL.** Every value is a bound parameter. Column, metric, and sort names come
-  from server-side allowlists, because identifiers cannot be parameterised —
-  that is an injection concern independent of authentication.
-- **Rendering.** All device-supplied strings are rendered as React text
-  children. There is no `dangerouslySetInnerHTML` anywhere in the tree, so an
-  `extra` field containing markup round-trips as an inert string.
-- **CSV injection.** Exported cells beginning with `=`, `+`, `-`, or `@` are
-  prefixed with an apostrophe, because device names and the `extra` blob are
-  attacker-influenced and a spreadsheet will execute a formula.
-- **Errors fail closed.** One handler converts errors to responses. Known
-  `ApiError`s carry a message written for a user; everything else collapses to a
-  generic `500`. Stack traces, SQL text, file paths, and upstream provider
-  responses are logged server-side and never serialised.
-- **Response headers.** `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive
-  `Permissions-Policy`, and HSTS in production.
-- **Immutable readings.** Enforced by a `BEFORE UPDATE` trigger in SQLite, not
-  by the absence of an `UPDATE` statement.
-- **Untrusted design parameters.** Parameters arriving from a share URL are
-  clamped by `sanitiseParams` before reaching the generator, so a tampered link
-  cannot request a ten-million-triangle mesh or a negative dimension.
-
-### Content-Security-Policy
-
-Injected into `index.html` at build time so `connect-src` always matches the
-configured API origin. No `unsafe-inline` or `unsafe-eval` for scripts.
-`style-src` allows inline styles because MapLibre injects rules at runtime; that
-is a style directive and cannot execute code.
-
-GitHub Pages cannot set response headers, so the policy ships as a meta tag —
-which cannot express `frame-ancestors` or `report-uri`. Behind a host that can
-set headers, use:
+Generated at build time from the host list above and injected into
+`index.html`:
 
 ```
-Content-Security-Policy:
-  default-src 'self';
-  script-src 'self';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:;
-  font-src 'self' data:;
-  connect-src 'self' https://your-api.fly.dev;
-  worker-src 'self' blob:;
-  object-src 'none';
-  base-uri 'self';
-  form-action 'self';
-  frame-ancestors 'none';
-  upgrade-insecure-requests
+default-src 'self';
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: https://tile.openstreetmap.org https://nominatim.openstreetmap.org;
+font-src 'self' data:;
+connect-src 'self' https://tile.openstreetmap.org https://nominatim.openstreetmap.org;
+worker-src 'self' blob:;
+object-src 'none';
+base-uri 'self';
+form-action 'self';
+frame-ancestors 'none';
+upgrade-insecure-requests
 ```
+
+No `unsafe-inline` or `unsafe-eval` for scripts. `style-src` permits inline
+styles because MapLibre injects rules at runtime — that is a style directive and
+cannot execute code.
+
+A meta tag cannot express `frame-ancestors`; the directive is included above for
+any host that can set real headers, but on GitHub Pages it has no effect.
+
+---
+
+## Handling untrusted input
+
+Everything the app reads is untrusted: CSV files come from other people's tools,
+and share links come from whoever sent them.
+
+- **Rendering.** All imported strings reach the DOM as React text children.
+  There is no `dangerouslySetInnerHTML` anywhere in the tree, so a CSV cell
+  containing `<img src=x onerror=...>` is displayed as those characters.
+- **CSV parsing.** A hand-written RFC 4180 parser with no `eval` and no regex
+  backtracking hazards. Malformed input produces reported issues, not
+  exceptions.
+- **Range validation.** Every numeric field is bounded before storage, so a
+  transposed unit or a corrupt row is rejected rather than charted.
+- **CSV export.** Cells beginning with `=`, `+`, `-`, or `@` are prefixed with an
+  apostrophe. Imported device names and extra fields are attacker-influenced,
+  and a spreadsheet will execute `=cmd|...` on open. Extra fields are
+  additionally JSON-wrapped, so a formula inside them can never begin a cell.
+- **Share links.** Design parameters decoded from a URL are clamped by
+  `sanitiseParams` before reaching the generator, so a tampered link cannot
+  request a ten-million-triangle mesh or a negative dimension. A link that
+  cannot be decoded shows an error rather than throwing.
+- **Storage limits.** Imports are capped at 100,000 readings and 500 designs, so
+  a pathological file cannot exhaust the origin's storage quota.
 
 ---
 
 ## Build-time guarantees
 
-`npm run build` in `frontend/` runs `scripts/check-bundle-secrets.mjs` against
-the output and fails on:
+`npm run build` runs `scripts/check-bundle-secrets.mjs` against the output and
+fails on:
 
 - AWS access key ids, Google API keys, Slack and GitHub tokens, Stripe keys,
   Mapbox/MapTiler secret tokens, JWTs, private-key blocks, database connection
-  strings with inline credentials, service-account key fields, and this
-  project's own `stk_` device-key format
+  strings with inline credentials, and service-account key fields
 - long opaque literals assigned to credential-shaped names
 - forbidden files reaching the bundle (`.env*`, `*.pem`, `id_rsa`,
   `credentials.json`, `service-account*.json`)
 
-The deploy workflow runs the same check and injects no repository secret. **If a
-repository secret is ever needed at build time, the design is wrong** — the
-feature belongs behind a backend proxy route.
+CI runs the same check. **The deploy workflow injects no secret. If it ever
+needs one, the design has gone wrong.**
 
-The scanner is a backstop, not the control. The control is that the backend
-holds every credential and the frontend has no code path that would use one.
-
----
-
-## If something leaks
-
-### A map or geocoding key
-
-1. Issue a new key at the provider and delete the old one.
-2. `fly secrets set MAP_TILES_KEY=... GEOCODE_KEY=...` — this restarts the app.
-3. Nothing in the frontend changes; it never had the key.
-4. Check the provider's usage graph for the exposure window.
-
-### A device key
-
-1. `npm run device -- rotate <device-id>` on the server. The previous key stops
-   working the instant the command returns; only the hash is stored, so there is
-   nothing to revoke separately.
-2. Reconfigure the device with the new key.
-3. Existing readings are unaffected. If bogus readings were ingested,
-   `npm run device -- remove <device-id>` deletes the device and cascades to its
-   readings; then register a fresh one.
-
-### A share link
-
-`Studio → Share → Revoke all`, or delete the rows from `design_shares`. Note
-that with no accounts this only revokes the permalink — the design remains
-readable through `GET /api/designs` like everything else.
-
-### The database file
-
-The volume holds device-key hashes and telemetry, including location history.
-No plaintext credential is in it, but the telemetry itself is the sensitive
-part.
-
-1. Rotate every device key.
-2. Rotate the map and geocoding keys, since an attacker with volume access
-   likely had environment access too.
-3. Treat the location history as disclosed.
+The scanner is a backstop, not the control. The control is that the app has no
+code path that would use a credential.
 
 ---
 
-## Putting auth back
+## Sharing a design
 
-If the exposure above is not acceptable, the smallest change that closes it is
-to require a single shared credential on the read routes. Sketch:
+A share link carries the design's parameters encoded in the URL fragment. That
+makes it work forever with no server — and means it **cannot be revoked**. The
+studio says so where the link is generated.
 
-1. Add `API_ACCESS_TOKEN` to the backend environment (a `fly secret`).
-2. Add an `onRequest` hook that requires `Authorization: Bearer <token>` on
-   everything except `/health` and `/api/ingest`.
-3. **Do not put that token in the frontend bundle** — it would be published.
-   The frontend would need a real login form that exchanges a password for an
-   httpOnly cookie, which is the session model this project had before it was
-   removed and which is recoverable from the git history.
+It exposes only the stone: dimensions, shape, and material. No telemetry, no
+other designs, nothing about you.
 
-The intermediate options are all worse than they look: an IP allowlist breaks on
-mobile networks, and a token in `localStorage` is readable by any injected
-script and still ships in the bundle if it is a build-time constant.
+---
+
+## Your data is only as safe as your backup
+
+There is no server, so there is also no backup. Browser storage is deleted by:
+
+- clearing site data or browsing history with "cookies and site data" selected
+- some "clean up disk space" tools
+- private or incognito windows, when the window closes
+- browser storage eviction under heavy disk pressure (rare, but possible)
+
+**Import → Export backup** is the only copy. Take one before clearing history or
+switching machines.
+
+---
+
+## If something goes wrong
+
+**I imported the wrong file.** Import → Delete all readings, then re-import.
+Devices and designs are untouched.
+
+**I want to wipe the browser copy.** Import → Delete everything. Reload and the
+sample dataset returns.
+
+**A shared link is circulating and I want it dead.** You cannot revoke it — the
+design travels inside the link. It only ever exposed that one stone.
+
+**The machine was compromised.** Assume the local data was readable. There are
+no credentials to rotate, and nothing was ever transmitted, so the exposure is
+limited to whatever was in that browser profile.
+
+---
+
+## The optional backend
+
+`backend/` contains a Fastify + SQLite API for live device ingest. It is **not
+used by the deployed frontend** and is not running anywhere by default.
+
+If you do deploy it, it carries its own considerations: device keys are the only
+credential, provisioning is deliberately CLI-only so no HTTP route can mint one,
+reads are unauthenticated, and CORS uses an explicit origin allowlist. Those
+decisions and their trade-offs are documented in the module headers and asserted
+by `backend/test/access.test.ts`.
 
 ---
 
