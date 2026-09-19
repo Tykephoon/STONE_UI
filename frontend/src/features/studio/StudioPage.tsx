@@ -87,6 +87,10 @@ export function StudioPage(): JSX.Element {
   const showHint = !hintSeen;
   const dismissHint = useCallback(() => setHintSeen(true), [setHintSeen]);
 
+  const [showControlPoints, setShowControlPoints] = useLocalPreference(
+    'studio.showControlPoints',
+    true,
+  );
   const [showGrid, setShowGrid] = useState(true);
   const [autoRotate, setAutoRotate] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
@@ -475,6 +479,8 @@ export function StudioPage(): JSX.Element {
                 onInfluenceChange={setInfluence}
                 onClearSculpt={clearSculpt}
                 hasSculpt={isSculpted(params.sculpt ?? emptySculpt())}
+                showControlPoints={showControlPoints}
+                onShowControlPointsChange={setShowControlPoints}
               />
             )}
 
@@ -588,6 +594,7 @@ export function StudioPage(): JSX.Element {
               sculpt={params.sculpt ?? emptySculpt()}
               references={references}
               editable
+              showControlPoints={showControlPoints}
               showGrid={showGrid}
               autoRotate={autoRotate}
               resetSignal={resetSignal}
@@ -659,6 +666,11 @@ export function StudioPage(): JSX.Element {
             </div>
 
             <div className={styles.viewerControls}>
+              <Toggle
+                label="Handles"
+                checked={showControlPoints}
+                onChange={setShowControlPoints}
+              />
               <Toggle label="Grid" checked={showGrid} onChange={setShowGrid} />
               <Toggle label="Rotate" checked={autoRotate} onChange={setAutoRotate} />
               <Button size="sm" variant="ghost" onClick={() => setResetSignal((v) => v + 1)}>

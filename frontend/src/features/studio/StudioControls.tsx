@@ -8,7 +8,7 @@
  */
 import type { DesignParams } from '../../data/types';
 import { Button } from '../../components/ui/Button';
-import { ColorField, FieldGroup, Slider, TextField } from '../../components/ui/Form';
+import { ColorField, FieldGroup, Slider, TextField, Toggle } from '../../components/ui/Form';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
 import { formatCount } from '../../lib/format';
 import { PRESETS, RESOLUTION_LIMITS, trianglesForResolution } from './types';
@@ -26,6 +26,8 @@ export interface StudioControlsProps {
   onInfluenceChange: (influence: number) => void;
   onClearSculpt: () => void;
   hasSculpt: boolean;
+  showControlPoints: boolean;
+  onShowControlPointsChange: (value: boolean) => void;
 }
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
@@ -40,6 +42,8 @@ export function StudioControls({
   onInfluenceChange,
   onClearSculpt,
   hasSculpt,
+  showControlPoints,
+  onShowControlPointsChange,
 }: StudioControlsProps): JSX.Element {
   const patch = <K extends keyof DesignParams>(key: K, value: Partial<DesignParams[K]>) => {
     onChange({
@@ -176,9 +180,15 @@ export function StudioControls({
       </FieldGroup>
 
       <FieldGroup title="Sculpting">
+        <Toggle
+          label="Show handles"
+          checked={showControlPoints}
+          onChange={onShowControlPointsChange}
+          description="Hide the dots to see the stone unobstructed. Sculpting is kept either way."
+        />
         <p className={styles.note}>
-          Drag the dots on the stone to pull the surface out or push it in. This slider sets how
-          far each pull spreads.
+          Drag a dot to pull the surface out or push it in. This slider sets how far each pull
+          spreads.
         </p>
         <Slider
           label="Pull reach"

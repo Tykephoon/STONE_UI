@@ -74,6 +74,8 @@ export interface StoneViewerProps {
   sculpt?: SculptParams;
   /** Enables the control points. Off for the read-only viewer. */
   editable?: boolean;
+  /** Lets the user hide the dots without losing the sculpt. */
+  showControlPoints?: boolean;
   showGrid?: boolean;
   autoRotate?: boolean;
   /** Bumping this re-frames the camera. */
@@ -117,6 +119,7 @@ export function StoneViewer({
   sculpt,
   references = [],
   editable = false,
+  showControlPoints = true,
   showGrid = true,
   autoRotate = false,
   resetSignal = 0,
@@ -329,11 +332,30 @@ export function StoneViewer({
 
     const pickHandle = (ndc: Vector2): ControlHandle | null => {
       if (!editable || !gizmoGroupRef.current?.visible) return null;
+
       raycaster.setFromCamera(ndc, camera);
+
+      /*
+        Nearest handle wins, not the first in the list. Dots overlap readily
+        when the stone is viewed edge-on, and picking whichever happened to be
+        created first would grab one behind the surface.
+      */
+      let closest: ControlHandle | null = null;
+      let closestDistance = Number.POSITIVE_INFINITY;
+
       for (const handle of handlesRef.current) {
-        if (raycaster.intersectObject(handle.pickTarget, false).length > 0) return handle;
+        // A hidden group does not hide its children from a direct
+        // intersectObject call, so this has to be checked explicitly.
+        if (!handle.group.visible) continue;
+
+        const hit = raycaster.intersectObject(handle.pickTarget, false)[0];
+        if (hit && hit.distance < closestDistance) {
+          closestDistance = hit.distance;
+          closest = handle;
+        }
       }
-      return null;
+
+      return closest;
     };
 
     const pickReference = (ndc: Vector2): string | null => {
@@ -594,68 +616,90 @@ export function StoneViewer({
   // -------------------------------------------------------------------------
   useEffect(() => {
     const stone = stoneRef.current;
+    const gizmoGroup = gizmoGroupRef.current;
     const handles = handlesRef.current;
-    if (!stone || handles.length === 0) return;
+    if (!stone || !gizmoGroup || handles.length === 0) return;
 
-    const visible = editable && geometry !== null;
-    for (const handle of handles) handle.group.visible = visible;
+    const visible = editable && showControlPoints && geometry !== null;
+    gizmoGroup.visible = visible;
 
     if (!visible || !geometry) {
       requestRender.current();
       return;
     }
 
-    /*
-      Find where each control direction meets the surface by casting a ray from
-      the centre of the stone outward. Doing it geometrically rather than
-      recomputing the generator's radius keeps the handles honest: they sit on
-      the mesh actually being displayed, including its taper, flatten, and
-      faceting.
-    */
-    const raycaster = new Raycaster();
+    // Handles are positioned in world space, so the group itself stays at the
+    // origin rather than shadowing the stone's transform.
+    gizmoGroup.position.set(0, 0, 0);
+
+    const position = geometry.getAttribute('position');
     const centre = new Vector3();
     stone.getWorldPosition(centre);
+
+    geometry.computeBoundingSphere();
+    const reach = (geometry.boundingSphere?.radius ?? 1) * MM * 2;
+
+    const raycaster = new Raycaster();
+    const localVertex = new Vector3();
+    const worldVertex = new Vector3();
 
     for (const handle of handles) {
       const direction = CONTROL_POINT_DIRECTIONS[handle.index]!;
       const ray = new Vector3(direction[0], direction[1], direction[2]).normalize();
 
-      raycaster.set(centre, ray);
+      /*
+        Cast from outside the stone inward, not from the centre outward.
+        The material is FrontSide, so a ray starting inside a closed mesh only
+        ever meets back faces — which raycasting culls, producing no hit at all.
+        Approaching from outside meets the front face the viewer can see.
+      */
+      raycaster.set(centre.clone().addScaledVector(ray, reach), ray.clone().negate());
       const hit = raycaster.intersectObject(stone, false)[0];
 
-      if (hit) {
+      if (hit?.face) {
+        /*
+          Snap to the nearest corner of the triangle that was hit, so a dot sits
+          exactly on a vertex of the mesh rather than floating at an arbitrary
+          point across a face.
+        */
+        let bestDistance = Number.POSITIVE_INFINITY;
+        let bestX = hit.point.x;
+        let bestY = hit.point.y;
+        let bestZ = hit.point.z;
+
+        for (const vertexIndex of [hit.face.a, hit.face.b, hit.face.c]) {
+          localVertex.fromBufferAttribute(position, vertexIndex);
+          worldVertex.copy(localVertex);
+          stone.localToWorld(worldVertex);
+
+          const distance = worldVertex.distanceToSquared(hit.point);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestX = worldVertex.x;
+            bestY = worldVertex.y;
+            bestZ = worldVertex.z;
+          }
+        }
+
         positionControlHandle(
           handle,
-          [hit.point.x - centre.x, hit.point.y - centre.y, hit.point.z - centre.z],
-          // Face the ring along the surface normal where there is one, and
-          // along the ray otherwise.
-          hit.face
-            ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z]
-            : [ray.x, ray.y, ray.z],
+          [bestX, bestY, bestZ],
+          // The stone's object scale is uniform, so a local face normal is
+          // already a world normal and needs no normal-matrix transform.
+          [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z],
         );
+        handle.group.visible = true;
       } else {
-        // No hit means the ray missed a concave region; fall back to the
-        // bounding sphere so the handle is still reachable.
-        const fallback = (geometry.boundingSphere?.radius ?? 100) * MM;
-        positionControlHandle(
-          handle,
-          [ray.x * fallback, ray.y * fallback, ray.z * fallback],
-          [ray.x, ray.y, ray.z],
-        );
+        // A direction with no hit would otherwise leave a dot stranded in
+        // space, which is worse than showing nothing.
+        handle.group.visible = false;
       }
 
       setControlPull(handle, pullsRef.current[handle.index] ?? 0);
     }
 
-    // Handles are children of the stone group's parent, so they need the same
-    // vertical offset the stone has.
-    if (gizmoGroupRef.current) {
-      gizmoGroupRef.current.position.copy(stone.position);
-      gizmoGroupRef.current.visible = visible;
-    }
-
     requestRender.current();
-  }, [geometry, editable, dimensions, sculpt]);
+  }, [geometry, editable, showControlPoints, dimensions, sculpt]);
 
   // -------------------------------------------------------------------------
   // Reference objects

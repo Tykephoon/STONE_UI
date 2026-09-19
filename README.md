@@ -160,8 +160,13 @@ bytes and a shared link reproduces exactly what its author saw.
 
 Fourteen control points sit on the stone's surface as small dots, evenly spread
 via a Fibonacci sphere so the top is not over-controlled and the waist
-under-controlled. Hover one and a ring shows the area it affects; drag it
+under-controlled. Each dot is snapped to an actual vertex of the mesh, found by
+casting a ray from outside the stone inward — so they sit on the rock rather
+than hovering near it. Hover one and a ring shows the area it affects; drag it
 outward to raise a bump, inward to press a dent.
+
+The dots can be hidden with the **Handles** toggle above the viewport, or from
+the Sculpting panel. Hiding them keeps the sculpt; it only clears the view.
 
 Pulls are **local, not uniform**. Influence falls off smoothly with angular
 distance, so a pull shapes a region rather than scaling the whole stone.
