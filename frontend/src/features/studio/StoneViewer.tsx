@@ -47,6 +47,7 @@ import {
   createControlHandle,
   createReferenceMesh,
   positionControlHandle,
+  screenScaleFor,
   setControlPull,
 } from './sceneHelpers';
 import {
@@ -261,10 +262,25 @@ export function StoneViewer({
 
     let disposed = false;
 
+    /*
+      Handles are sized in screen space, so their scale depends on how far each
+      one is from the camera. Recomputed per frame rather than per change,
+      because orbiting and zooming both move them without changing any state.
+    */
+    const updateHandleScales = () => {
+      const fov = (camera.fov * Math.PI) / 180;
+      for (const handle of handlesRef.current) {
+        if (!handle.group.visible) continue;
+        const distance = camera.position.distanceTo(handle.group.position);
+        handle.setScreenScale(screenScaleFor(distance, fov));
+      }
+    };
+
     const renderFrame = () => {
       frameRef.current = null;
       if (disposed) return;
       controls.update();
+      updateHandleScales();
       renderer.render(scene, camera);
     };
 
@@ -343,10 +359,29 @@ export function StoneViewer({
       let closest: ControlHandle | null = null;
       let closestDistance = Number.POSITIVE_INFINITY;
 
+      const toCamera = new Vector3();
+
       for (const handle of handlesRef.current) {
         // A hidden group does not hide its children from a direct
         // intersectObject call, so this has to be checked explicitly.
         if (!handle.group.visible) continue;
+
+        /*
+          Skip handles on the far side. The rock hides them visually via the
+          depth test, and reaching through it to grab one would be worse than
+          the original bug.
+
+          A facing test rather than a ray cast against the mesh: at level 6 the
+          stone is ~245,000 triangles with no BVH, so casting fourteen rays on
+          every pointer move would cost tens of milliseconds. The stone is
+          near-convex, which makes this exact in practice and cheap always.
+        */
+        const direction = CONTROL_POINT_DIRECTIONS[handle.index]!;
+        toCamera.copy(camera.position).sub(handle.group.position).normalize();
+        const facing =
+          direction[0] * toCamera.x + direction[1] * toCamera.y + direction[2] * toCamera.z;
+        // A small positive bias stops silhouette handles flickering in and out.
+        if (facing < 0.05) continue;
 
         const hit = raycaster.intersectObject(handle.pickTarget, false)[0];
         if (hit && hit.distance < closestDistance) {

@@ -114,7 +114,7 @@ Re-importing the same file is safe: records merge by id rather than duplicating.
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `:5173` |
-| `npm test` | 60 tests — CSV import, generator, STL export and print stats |
+| `npm test` | 117 tests — CSV import, generator, sculpting, placement, printability |
 | `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
@@ -164,6 +164,11 @@ under-controlled. Each dot is snapped to an actual vertex of the mesh, found by
 casting a ray from outside the stone inward — so they sit on the rock rather
 than hovering near it. Hover one and a ring shows the area it affects; drag it
 outward to raise a bump, inward to press a dent.
+
+Handles are depth-tested, so the rock hides the ones behind it, and each bead
+sits centred on its vertex — the stone clips its back half, which reads as set
+into the surface. They are sized in screen space, so they stay the same size
+whether the stone is a pebble or a boulder and however far the camera is.
 
 The dots can be hidden with the **Handles** toggle above the viewport, or from
 the Sculpting panel. Hiding them keeps the sculpt; it only clears the view.
@@ -215,6 +220,14 @@ Before you export it shows:
 glTF and OBJ are also available: glTF keeps the vertex colours for rendering,
 OBJ is the lowest common denominator for other CAD tools. STL carries geometry
 only — no colour — which is what a slicer wants.
+
+**Printability is a standing constraint, not a one-off check.**
+`test/printability.test.ts` runs every shaping feature — sculpting at both
+extremes, full faceting, extreme aspect ratios, all five resolutions — and
+asserts that each result is watertight, encloses a real volume no larger than
+its own bounding box, keeps the exact requested dimensions, contains no
+degenerate triangles, and never collapses through its own centre. Any new
+deformation belongs in that matrix.
 
 **Sharing** encodes the whole design into the URL — an editable link that opens
 in the studio, or a read-only viewer link. Both work with no server, which also
@@ -280,7 +293,7 @@ frontend/
       dashboard/ readings/ devices/ import/
       studio/            generator · viewer · gizmos · printing · references
     hooks/  lib/  styles/
-  test/                CSV import · generator · STL and print stats
+  test/                CSV import · generator · sculpting · placement · printability
 
 backend/               Optional. Unused by the frontend — see Live ingest.
 ```

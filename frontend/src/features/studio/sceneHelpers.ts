@@ -178,66 +178,88 @@ export interface ControlHandle {
   pickTarget: Mesh;
   index: number;
   setState: (state: 'idle' | 'hover' | 'active') => void;
+  /** Applies the distance-compensating scale computed each frame. */
+  setScreenScale: (scale: number) => void;
   dispose: () => void;
 }
 
 /** Neutral, pulled out, pushed in. Colour carries the sign of the pull. */
-const DOT_NEUTRAL = 0xc9c3b6;
+const DOT_NEUTRAL = 0xd8d2c4;
 const DOT_OUT = 0x4caf50;
 const DOT_IN = 0xe05252;
 
 /**
- * A control point: a small dot on the surface, with a ring that appears on
- * hover to show the area a pull will affect.
+ * Geometry is built at unit radius and sized entirely by `setScreenScale`, so a
+ * dot stays the same size on screen whether the stone is a pebble or a boulder
+ * and whether the camera is close or far. A fixed world size would be
+ * unusable at one end of that range and invisible at the other.
+ */
+const DOT_RADIUS = 1;
+const RING_INNER = 1.9;
+const RING_OUTER = 2.45;
+const PICK_RADIUS = 3.4;
+
+/**
+ * A control point: a small bead sitting on a vertex, with a ring that appears
+ * on hover to show the area a pull will affect.
  *
- * Both draw over the stone. A handle hidden inside the geometry it controls is
- * a handle nobody can use.
+ * Both are depth-tested, so the rock hides the ones behind it. The bead is
+ * centred on the surface rather than floating above it, which means the rock
+ * clips its back half — it reads as set into the stone, and a sphere
+ * intersecting a surface cannot z-fight the way a floating one would.
  */
 export function createControlHandle(index: number): ControlHandle {
   const group = new Group();
 
   const dotMaterial = new MeshBasicMaterial({
     color: DOT_NEUTRAL,
-    depthTest: false,
     transparent: true,
-    opacity: 0.95,
+    opacity: 0.98,
   });
-  const dotGeometry = new SphereGeometry(0.0038, 16, 12);
+  const dotGeometry = new SphereGeometry(DOT_RADIUS, 16, 12);
   const dot = new Mesh(dotGeometry, dotMaterial);
   group.add(dot);
 
   const ringMaterial = new MeshBasicMaterial({
     color: 0x3987e5,
     side: DoubleSide,
-    depthTest: false,
     transparent: true,
     opacity: 0,
+    /*
+      The ring lies flat against the surface, so it is coplanar with the
+      triangles under it and would shimmer. A polygon offset pulls it toward
+      the camera in depth only, without moving it in space.
+    */
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
-  const ringGeometry = new RingGeometry(0.0072, 0.0092, 32);
+  const ringGeometry = new RingGeometry(RING_INNER, RING_OUTER, 32);
   const ring = new Mesh(ringGeometry, ringMaterial);
   group.add(ring);
 
-  // A generous invisible target: the dot is a few pixels across on screen, and
+  // A generous invisible target: the bead is a few pixels across, and
   // requiring a pixel-perfect hit would make the tool feel broken.
-  const pickGeometry = new SphereGeometry(0.014, 12, 8);
-  const pickTarget = new Mesh(
-    pickGeometry,
-    new MeshBasicMaterial({ visible: false, depthTest: false }),
-  );
+  const pickGeometry = new SphereGeometry(PICK_RADIUS, 12, 8);
+  const pickTarget = new Mesh(pickGeometry, new MeshBasicMaterial({ visible: false }));
   group.add(pickTarget);
 
-  group.renderOrder = 1000;
-  dot.renderOrder = 1001;
-  ring.renderOrder = 1000;
+  let stateScale = 1;
+  let screenScale = 1;
+  const applyScale = () => group.scale.setScalar(stateScale * screenScale);
 
   return {
     group,
     pickTarget,
     index,
     setState: (state) => {
-      const scale = state === 'idle' ? 1 : state === 'hover' ? 1.35 : 1.6;
-      dot.scale.setScalar(scale);
-      ringMaterial.opacity = state === 'idle' ? 0 : state === 'hover' ? 0.55 : 0.9;
+      stateScale = state === 'idle' ? 1 : state === 'hover' ? 1.3 : 1.5;
+      ringMaterial.opacity = state === 'idle' ? 0 : state === 'hover' ? 0.6 : 0.95;
+      applyScale();
+    },
+    setScreenScale: (scale) => {
+      screenScale = scale;
+      applyScale();
     },
     dispose: () => {
       dotGeometry.dispose();
@@ -266,10 +288,22 @@ export function setControlPull(handle: ControlHandle, pull: number): void {
 }
 
 /**
- * Place a handle on the deformed surface and turn its ring to face outward.
+ * Screen-constant sizing.
  *
- * `surfacePoint` is in scene units and already includes the sculpt, so the dot
- * sits on the stone rather than hovering off a notional sphere.
+ * Multiplying by distance cancels perspective foreshortening, so the bead keeps
+ * a steady pixel size. The constant is derived from the viewport's vertical
+ * field of view rather than guessed, so it holds if the camera changes.
+ */
+export function screenScaleFor(distance: number, fovRadians: number, targetFraction = 0.009): number {
+  const worldHeightAtDistance = 2 * distance * Math.tan(fovRadians / 2);
+  return worldHeightAtDistance * targetFraction;
+}
+
+/**
+ * Place a handle on the surface and turn its ring to lie flat against it.
+ *
+ * `surfacePoint` is a world position on the mesh, so the bead sits on the rock
+ * rather than near it.
  */
 export function positionControlHandle(
   handle: ControlHandle,
@@ -279,9 +313,9 @@ export function positionControlHandle(
   handle.group.position.set(surfacePoint[0], surfacePoint[1], surfacePoint[2]);
 
   // Lay the ring flat against the surface: its default plane faces +Z.
-  const target = new Vector3(normal[0], normal[1], normal[2]);
+  const target = new Vector3(normal[0], normal[1], normal[2]).normalize();
   const ring = handle.group.children[1] as Mesh;
-  ring.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), target.normalize());
+  ring.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), target);
 }
 
 export function disposeObject(object: Object3D): void {
