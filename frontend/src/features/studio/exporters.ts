@@ -14,7 +14,7 @@ import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import type { DesignParams } from '../../data/types';
 import { sanitiseParams } from './types';
 
-function triggerDownload(blob: Blob, filename: string): void {
+export function triggerDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -26,7 +26,7 @@ function triggerDownload(blob: Blob, filename: string): void {
 }
 
 /** Filesystem-safe name derived from the design's title. */
-function safeFilename(name: string, extension: string): string {
+export function safeFilename(name: string, extension: string): string {
   const base =
     name
       .trim()

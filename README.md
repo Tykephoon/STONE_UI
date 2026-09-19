@@ -29,6 +29,7 @@ come from OpenStreetMap, which needs no key.
 - **Clearing site data deletes it.** The export file is the only copy.
 - **No live device ingest.** A Pico cannot POST to this; see
   [Live ingest](#live-ingest-optional) if that changes.
+- **No sample data.** The dashboard is empty until you import something.
 
 ---
 
@@ -42,11 +43,8 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-That is the whole setup. On first run the app loads a bundled sample dataset —
-three weeks of simulated telemetry across two devices, including a slow leak on
-one rear-left tyre — so the dashboard has something real to render immediately.
-
-Delete it any time from **Import → Delete everything**.
+That is the whole setup. The app starts empty — there is no demo or sample data
+anywhere in it. Import a CSV, or open the Studio, which needs no data at all.
 
 ---
 
@@ -116,7 +114,7 @@ Re-importing the same file is safe: records merge by id rather than duplicating.
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `:5173` |
-| `npm test` | 54 tests — CSV import, generator determinism, sample data |
+| `npm test` | 60 tests — CSV import, generator, STL export and print stats |
 | `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
@@ -158,7 +156,50 @@ bytes and a shared link reproduces exactly what its author saw.
   exact rescale → normals blended smooth-to-flat, plus vertex colours for
   mineral veining and crevice shading.
 
-Export is glTF (`.glb`) or OBJ, in millimetres at the origin.
+### Stretching it
+
+Coloured arrows on the stone resize one dimension each — red for length, green
+for height, blue for width, the convention every 3D tool uses. Drag one and the
+mesh scales live; the real geometry is rebuilt once you let go, because a
+level-6 rebuild takes about 150 ms and would make the drag stutter.
+
+The numeric fields stay in sync both ways, so you can drag roughly and then type
+an exact figure.
+
+### Size reference
+
+The **Scale** tab holds real objects — coins, a bank card, a drinks can, a
+brick, a tennis ball, a person — grouped into categories. Click to drop one into
+the scene, then **drag it around the ground plane** to line it up against the
+stone.
+
+Every dimension is a published measurement with its source in the tooltip: the
+US quarter is 24.26 mm because the Mint says so, the bank card is ISO/IEC 7810
+ID-1. A scale reference that is only approximate teaches the wrong size
+confidently, so none of them are guesses.
+
+The list also shows how many of each object span the stone's longest axis.
+
+### 3D printing
+
+The **Print** tab exports **STL** at true millimetre scale, rotated Y-up to
+Z-up so it lands on the build plate the way it sat on the grid. No rescaling is
+needed on import.
+
+Before you export it shows:
+
+- **Watertight check** — whether every edge is shared by exactly two triangles.
+  A mesh with holes is either silently "repaired" by the slicer into something
+  you did not design, or rejected. Worth knowing before a nine-hour print.
+- **Solid volume and surface area**
+- **Estimated mass and filament length** for PLA, PETG, ABS, resin, or nylon at
+  a chosen infill
+- **Build-volume fit** against common printers, testing both footprint
+  orientations
+
+glTF and OBJ are also available: glTF keeps the vertex colours for rendering,
+OBJ is the lowest common denominator for other CAD tools. STL carries geometry
+only — no colour — which is what a slicer wants.
 
 **Sharing** encodes the whole design into the URL — an editable link that opens
 in the studio, or a read-only viewer link. Both work with no server, which also
@@ -179,7 +220,6 @@ it later would be wasted work.
 ```bash
 cd backend
 npm install && npm test     # 48 tests
-npm run seed                # simulated telemetry
 npm run dev                 # http://localhost:8080
 npm run device -- add "Pico-01"
 ```
@@ -195,11 +235,16 @@ Drop replacements into `frontend/public/`; no code changes needed.
 
 | File | Used for |
 |---|---|
-| `favicon.svg` | Browser tab icon |
+| `favicon.svg` | Browser tab icon, 96×96 viewBox |
 | `apple-touch-icon.png` | 180×180, iOS home screen |
-| `logo.svg` | In-app mark, roughly 132×32 |
+| `logo.svg` | In-app mark, 132×32 viewBox |
 
-The placeholders currently in place are clearly marked as such.
+All three carry the OPN STONE seal. The seal is fine line art, so `favicon.svg`
+and `logo.svg` embed it as a small PNG rather than tracing it to vector paths;
+`apple-touch-icon.png` is flattened onto `#0c0d10` because iOS discards alpha.
+
+To swap them, replace the files — the app reads them by name and needs no code
+change.
 
 ---
 
@@ -208,19 +253,19 @@ The placeholders currently in place are clearly marked as such.
 ```
 frontend/
   scripts/check-bundle-secrets.mjs   Pre-publish bundle audit
-  public/data/sample-telemetry.json  First-run dataset
   src/
     data/              Everything that touches storage lives here
       db.ts              IndexedDB wrapper
       store.ts           Queries, mutations, in-memory cache
       csv.ts             Parsing, column mapping, validation, export
-      sample.ts          First-run dataset loader
       geo.ts             OpenStreetMap tiles and geocoding
       export.ts          File downloads and backups
     components/        ui · charts · layout · map · filters
-    features/          dashboard · readings · devices · import · studio
+    features/
+      dashboard/ readings/ devices/ import/
+      studio/            generator · viewer · gizmos · printing · references
     hooks/  lib/  styles/
-  test/                CSV import · generator · sample data
+  test/                CSV import · generator · STL and print stats
 
 backend/               Optional. Unused by the frontend — see Live ingest.
 ```

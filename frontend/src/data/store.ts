@@ -11,16 +11,7 @@
  * remains the durable copy; the array is a cache rebuilt on load and after any
  * mutation.
  */
-import {
-  STORE,
-  clear,
-  getAll,
-  getMeta,
-  put,
-  putMany,
-  remove,
-  setMeta,
-} from './db';
+import { STORE, clear, getAll, put, putMany, remove } from './db';
 import type {
   Design,
   DesignParams,
@@ -733,7 +724,6 @@ export async function importBackup(
   await putMany(STORE.devices, devices);
   await putMany(STORE.readings, readings);
   await putMany(STORE.designs, designs);
-  await setMeta('sampleLoaded', true);
 
   invalidate();
   return { devices: devices.length, readings: readings.length, designs: designs.length };
@@ -743,8 +733,6 @@ export async function clearEverything(): Promise<void> {
   await clear([STORE.devices, STORE.readings, STORE.designs, STORE.meta]);
   invalidate();
 }
-
-export { getMeta, setMeta };
 
 // ---------------------------------------------------------------------------
 // Ids

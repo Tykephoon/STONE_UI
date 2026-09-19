@@ -23,17 +23,34 @@ import { ConfirmDialog, Modal } from '../../components/ui/Modal';
 import { SegmentedControl } from '../../components/ui/SegmentedControl';
 import { useToast } from '../../components/ui/Toast';
 import { useAction, useAsync } from '../../hooks/useAsync';
+import { useLocalPreference } from '../../hooks/useLocalPreference';
 import { formatCount } from '../../lib/format';
 import { formatRelative } from '../../lib/time';
 import { LocationPicker, type PickedLocation } from './LocationPicker';
-import { StoneViewer } from './StoneViewer';
+import { PrintPanel } from './PrintPanel';
+import { ScalePanel } from './ScalePanel';
+import { StoneViewer, type Dimensions } from './StoneViewer';
 import { StudioControls } from './StudioControls';
-import { buildParameterLink, buildViewerLink, decodeParams, exportGltf, exportObj } from './exporters';
+import {
+  type PlacedReference,
+  type ReferenceObject,
+  suggestPlacement,
+} from './referenceObjects';
+import { buildStl } from './printing';
+import {
+  buildParameterLink,
+  buildViewerLink,
+  decodeParams,
+  exportGltf,
+  exportObj,
+  safeFilename,
+  triggerDownload,
+} from './exporters';
 import { DEFAULT_PARAMS, DIMENSION_LIMITS, sanitiseParams, seedFromCoordinates } from './types';
 import { useStoneGeometry } from './useStoneGeometry';
 import styles from './StudioPage.module.css';
 
-type PanelTab = 'location' | 'shape' | 'library';
+type PanelTab = 'shape' | 'scale' | 'print' | 'location' | 'library';
 
 type Axis = 'length' | 'width' | 'height';
 
@@ -59,6 +76,15 @@ export function StudioPage(): JSX.Element {
   });
   const [loadedDesign, setLoadedDesign] = useState<Design | null>(null);
   const [isDirty, setIsDirty] = useState(false);
+
+  const [references, setReferences] = useState<PlacedReference[]>([]);
+  const [selectedReference, setSelectedReference] = useState<string | null>(null);
+  /** Live dimensions during a stretch drag; null when not dragging. */
+  const [previewDimensions, setPreviewDimensions] = useState<Dimensions | null>(null);
+
+  const [hintSeen, setHintSeen] = useLocalPreference('studio.hintSeen', false);
+  const showHint = !hintSeen;
+  const dismissHint = useCallback(() => setHintSeen(true), [setHintSeen]);
 
   const [showGrid, setShowGrid] = useState(true);
   const [autoRotate, setAutoRotate] = useState(false);
@@ -269,6 +295,67 @@ export function StudioPage(): JSX.Element {
     }
   }, [deleteTarget, deleteActionState, designsState, loadedDesign, navigate, toast]);
 
+  const addReference = useCallback(
+    (object: ReferenceObject) => {
+      setReferences((current) => {
+        const spot = suggestPlacement(current, params.dimensions.length_mm, object);
+        return [
+          ...current,
+          {
+            instanceId: `${object.id}-${Date.now().toString(36)}`,
+            objectId: object.id,
+            x: spot.x,
+            z: spot.z,
+          },
+        ];
+      });
+    },
+    [params.dimensions.length_mm],
+  );
+
+  const removeReference = useCallback((instanceId: string) => {
+    setReferences((current) => current.filter((entry) => entry.instanceId !== instanceId));
+    setSelectedReference((current) => (current === instanceId ? null : current));
+  }, []);
+
+  const moveReference = useCallback((instanceId: string, x: number, z: number) => {
+    setReferences((current) =>
+      current.map((entry) => (entry.instanceId === instanceId ? { ...entry, x, z } : entry)),
+    );
+  }, []);
+
+  /**
+   * Stretch drag finished. Only now is the mesh regenerated — during the drag
+   * the viewer scales the existing one, which keeps it smooth.
+   */
+  const commitDimensions = useCallback((next: Dimensions) => {
+    setPreviewDimensions(null);
+    setParams((current) => ({ ...current, dimensions: next }));
+    setDimensionDrafts({
+      length: String(Math.round(next.length_mm)),
+      width: String(Math.round(next.width_mm)),
+      height: String(Math.round(next.height_mm)),
+    });
+    setDimensionErrors({});
+    setIsDirty(true);
+  }, []);
+
+  const handleExportStl = useCallback(() => {
+    if (!geometry) return;
+    setIsExporting(true);
+    try {
+      triggerDownload(
+        new Blob([buildStl(geometry, name)], { type: 'model/stl' }),
+        safeFilename(name, 'stl'),
+      );
+      toast.success('STL exported', 'Open it in your slicer at 100% scale.');
+    } catch {
+      toast.error('Export failed', 'Try a lower mesh resolution.');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [geometry, name, toast]);
+
   const handleExport = useCallback(
     async (format: 'glb' | 'obj') => {
       if (!geometry) return;
@@ -337,12 +424,15 @@ export function StudioPage(): JSX.Element {
         <aside className={styles.panel}>
           <SegmentedControl
             label="Editor panel"
+            size="sm"
             value={tab}
             onChange={setTab}
             options={[
-              { value: 'location', label: 'Location' },
               { value: 'shape', label: 'Shape' },
-              { value: 'library', label: 'Library' },
+              { value: 'scale', label: 'Scale' },
+              { value: 'print', label: 'Print' },
+              { value: 'location', label: 'Place' },
+              { value: 'library', label: 'Saved' },
             ]}
           />
 
@@ -359,6 +449,30 @@ export function StudioPage(): JSX.Element {
                 dimensionDrafts={dimensionDrafts}
                 onDimensionDraftChange={handleDimensionDraft}
                 dimensionErrors={dimensionErrors}
+              />
+            )}
+
+            {tab === 'scale' && (
+              <ScalePanel
+                placed={references}
+                onAdd={addReference}
+                onRemove={removeReference}
+                onClear={() => {
+                  setReferences([]);
+                  setSelectedReference(null);
+                }}
+                selectedInstanceId={selectedReference}
+                stoneLongest={longestDimension}
+              />
+            )}
+
+            {tab === 'print' && (
+              <PrintPanel
+                geometry={geometry}
+                onExportStl={handleExportStl}
+                onExportGltf={() => handleExport('glb')}
+                onExportObj={() => handleExport('obj')}
+                isExporting={isExporting}
               />
             )}
 
@@ -444,16 +558,51 @@ export function StudioPage(): JSX.Element {
             <StoneViewer
               geometry={geometry}
               material={params.material}
-              scaleHint={longestDimension}
+              dimensions={params.dimensions}
+              references={references}
+              editable
               showGrid={showGrid}
               autoRotate={autoRotate}
               resetSignal={resetSignal}
+              onDimensionsPreview={setPreviewDimensions}
+              onDimensionsCommit={commitDimensions}
+              onReferenceMoved={moveReference}
+              onReferenceSelected={setSelectedReference}
             />
 
             {isGenerating && (
               <div className={styles.generating}>
                 <Spinner size={14} />
                 <span>Generating…</span>
+              </div>
+            )}
+
+            {showHint && geometry && (
+              <div className={styles.hint} role="note">
+                <span className={styles.hintAxes} aria-hidden="true">
+                  <span style={{ background: '#e05252' }} />
+                  <span style={{ background: '#4caf50' }} />
+                  <span style={{ background: '#4a8fe0' }} />
+                </span>
+                <span className={styles.hintText}>
+                  Drag the coloured arrows to stretch the stone. Add objects from the{' '}
+                  <strong>Scale</strong> tab and drag them to compare sizes.
+                </span>
+                <button
+                  type="button"
+                  className={styles.hintDismiss}
+                  onClick={dismissHint}
+                  aria-label="Dismiss hint"
+                >
+                  <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                    <path
+                      d="M4 4l8 8M12 4l-8 8"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
               </div>
             )}
 
@@ -466,9 +615,11 @@ export function StudioPage(): JSX.Element {
 
           <div className={styles.viewerBar}>
             <div className={styles.viewerStats}>
-              <span>
-                {params.dimensions.length_mm} × {params.dimensions.width_mm} ×{' '}
-                {params.dimensions.height_mm} mm
+              {/* Shows the live value mid-drag, the committed one otherwise. */}
+              <span className={previewDimensions ? styles.liveDimensions : undefined}>
+                {Math.round((previewDimensions ?? params.dimensions).length_mm)} ×{' '}
+                {Math.round((previewDimensions ?? params.dimensions).width_mm)} ×{' '}
+                {Math.round((previewDimensions ?? params.dimensions).height_mm)} mm
               </span>
               {stats && (
                 <>

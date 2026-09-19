@@ -1,15 +1,23 @@
 /**
- * Three.js viewport.
+ * Three.js viewport with direct manipulation.
  *
  * Owns the renderer, scene, camera, and orbit controls directly rather than
- * through a React-three binding: the scene has one mesh and a fixed light rig,
- * and a reconciler would add a dependency and a layer of indirection for no
- * gain.
+ * through a React-three binding: the scene is small and fixed, and a reconciler
+ * would add a dependency and a layer of indirection for no gain.
  *
- * Rendering is on demand — a frame is drawn when the camera moves or the
- * geometry changes, not sixty times a second into an unchanged picture.
+ * Three things can be dragged:
+ *
+ *   - **Stretch arrows** on the stone resize one dimension. While dragging, the
+ *     mesh is *scaled* rather than regenerated — a level-6 rebuild takes about
+ *     150 ms, which would make the drag stutter. The real geometry is rebuilt
+ *     once on release.
+ *   - **Reference objects** slide along the ground plane.
+ *   - **Empty space** orbits the camera, as usual.
+ *
+ * Rendering is on demand: a frame is drawn when something changes, not sixty
+ * times a second into an unchanged picture.
  */
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   ACESFilmicToneMapping,
   AmbientLight,
@@ -17,40 +25,94 @@ import {
   Color,
   DirectionalLight,
   GridHelper,
+  Group,
   Mesh,
   MeshPhysicalMaterial,
   PerspectiveCamera,
+  Plane,
+  Raycaster,
   Scene,
   SRGBColorSpace,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { DesignParams } from '../../data/types';
+import {
+  MM,
+  type StretchHandle,
+  axisVector,
+  createReferenceMesh,
+  createStretchHandle,
+  positionStretchHandle,
+} from './sceneHelpers';
+import { type PlacedReference, referenceById } from './referenceObjects';
 import styles from './StoneViewer.module.css';
+
+export interface Dimensions {
+  length_mm: number;
+  width_mm: number;
+  height_mm: number;
+}
 
 export interface StoneViewerProps {
   geometry: BufferGeometry | null;
   material: DesignParams['material'];
-  /** Longest dimension in millimetres, used to frame the camera. */
-  scaleHint: number;
+  dimensions: Dimensions;
+  /** Reference objects currently placed in the scene. */
+  references?: PlacedReference[];
+  /** Enables the stretch arrows. Off for the read-only viewer. */
+  editable?: boolean;
   showGrid?: boolean;
   autoRotate?: boolean;
-  /** Bumping this value re-frames the camera on the stone. */
+  /** Bumping this re-frames the camera. */
   resetSignal?: number;
+  /** Fires continuously during a stretch drag, for the numeric readout. */
+  onDimensionsPreview?: (dimensions: Dimensions) => void;
+  /** Fires once on release; triggers the real regeneration. */
+  onDimensionsCommit?: (dimensions: Dimensions) => void;
+  /** Fires when a reference object finishes being dragged. */
+  onReferenceMoved?: (instanceId: string, x: number, z: number) => void;
+  onReferenceSelected?: (instanceId: string | null) => void;
   className?: string;
 }
 
-/** The scene works in metres; the model is authored in millimetres. */
-const MM_TO_SCENE = 0.001;
+const MIN_MM = 1;
+const MAX_MM = 10_000;
+
+const clampMm = (value: number) => Math.min(MAX_MM, Math.max(MIN_MM, value));
+
+type DragState =
+  | {
+      kind: 'stretch';
+      handle: StretchHandle;
+      origin: Vector3;
+      axis: Vector3;
+      startOffset: number;
+      startDimensions: Dimensions;
+    }
+  | {
+      kind: 'reference';
+      instanceId: string;
+      group: Group;
+      grabOffset: Vector3;
+    }
+  | null;
 
 export function StoneViewer({
   geometry,
   material,
-  scaleHint,
+  dimensions,
+  references = [],
+  editable = false,
   showGrid = true,
   autoRotate = false,
   resetSignal = 0,
+  onDimensionsPreview,
+  onDimensionsCommit,
+  onReferenceMoved,
+  onReferenceSelected,
   className,
 }: StoneViewerProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,28 +121,49 @@ export function StoneViewer({
   const sceneRef = useRef<Scene | null>(null);
   const cameraRef = useRef<PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const meshRef = useRef<Mesh | null>(null);
+  const stoneRef = useRef<Mesh | null>(null);
   const materialRef = useRef<MeshPhysicalMaterial | null>(null);
   const gridRef = useRef<GridHelper | null>(null);
   const frameRef = useRef<number | null>(null);
 
-  /** Queue exactly one frame; repeated calls in a tick collapse to one draw. */
+  const handlesRef = useRef<StretchHandle[]>([]);
+  const gizmoGroupRef = useRef<Group | null>(null);
+  const referenceGroupRef = useRef<Group | null>(null);
+  const referenceHandlesRef = useRef<
+    Map<string, { group: Group; pickTarget: Mesh; selectionRing: Mesh; dispose: () => void }>
+  >(new Map());
+
+  const dragRef = useRef<DragState>(null);
+  const selectedRef = useRef<string | null>(null);
+  const dimensionsRef = useRef<Dimensions>(dimensions);
+  dimensionsRef.current = dimensions;
+
+  // Callbacks in refs so the scene is built once and never torn down by a
+  // parent handing down new function identities.
+  const previewRef = useRef(onDimensionsPreview);
+  previewRef.current = onDimensionsPreview;
+  const commitRef = useRef(onDimensionsCommit);
+  commitRef.current = onDimensionsCommit;
+  const movedRef = useRef(onReferenceMoved);
+  movedRef.current = onReferenceMoved;
+  const selectedCallbackRef = useRef(onReferenceSelected);
+  selectedCallbackRef.current = onReferenceSelected;
+
   const requestRender = useRef<() => void>(() => undefined);
 
+  // -------------------------------------------------------------------------
+  // Scene setup
+  // -------------------------------------------------------------------------
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const renderer = new WebGLRenderer({
-      antialias: true,
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
+    const renderer = new WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = SRGBColorSpace;
-    // Filmic tone mapping keeps the specular highlight on a wet-looking stone
-    // from clipping to a flat white blob.
+    // Filmic tone mapping keeps a wet-looking specular highlight from clipping
+    // to a flat white blob.
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
     container.append(renderer.domElement);
@@ -105,14 +188,13 @@ export function StoneViewer({
     controls.rotateSpeed = 0.8;
     controls.panSpeed = 0.7;
     controls.zoomSpeed = 0.9;
-    // Stop the orbit from passing under the ground plane, which looks broken.
     controls.maxPolarAngle = Math.PI * 0.92;
     controlsRef.current = controls;
 
     /*
-      A three-point rig: a strong key from the upper front, a cool fill from
-      the opposite side so the shadow side keeps some form, and a rim light
-      from behind to separate the silhouette from the background.
+      Three-point rig: a strong key from the upper front, a cool fill from the
+      opposite side so the shadow side keeps its form, and a rim from behind to
+      separate the silhouette from the background.
     */
     const key = new DirectionalLight('#fff6e8', 2.6);
     key.position.set(1.1, 1.5, 0.9);
@@ -129,26 +211,43 @@ export function StoneViewer({
     scene.add(new AmbientLight('#4a5260', 0.55));
 
     const grid = new GridHelper(1, 20, 0x2c313b, 0x1e222a);
-    grid.position.y = 0;
     scene.add(grid);
     gridRef.current = grid;
 
-    const physicalMaterial = new MeshPhysicalMaterial({
+    const physical = new MeshPhysicalMaterial({
       vertexColors: true,
       roughness: 0.85,
       metalness: 0.04,
       clearcoat: 0,
       clearcoatRoughness: 0.4,
-      // Flat-shaded triangles come from the generator's normals, not from
-      // three's flatShading, so smooth-to-faceted can be continuous.
-      flatShading: false,
     });
-    materialRef.current = physicalMaterial;
+    materialRef.current = physical;
 
-    const mesh = new Mesh(undefined, physicalMaterial);
-    mesh.visible = false;
-    scene.add(mesh);
-    meshRef.current = mesh;
+    const stone = new Mesh(undefined, physical);
+    stone.visible = false;
+    scene.add(stone);
+    stoneRef.current = stone;
+
+    const gizmoGroup = new Group();
+    gizmoGroup.visible = false;
+    scene.add(gizmoGroup);
+    gizmoGroupRef.current = gizmoGroup;
+
+    const referenceGroup = new Group();
+    scene.add(referenceGroup);
+    referenceGroupRef.current = referenceGroup;
+
+    // Five arrows: both ends of length and width, and the top for height.
+    // Height grows from the ground, so it has no lower handle.
+    const handles: StretchHandle[] = [
+      createStretchHandle('length', 1),
+      createStretchHandle('length', -1),
+      createStretchHandle('width', 1),
+      createStretchHandle('width', -1),
+      createStretchHandle('height', 1),
+    ];
+    for (const handle of handles) gizmoGroup.add(handle.group);
+    handlesRef.current = handles;
 
     let disposed = false;
 
@@ -183,18 +282,437 @@ export function StoneViewer({
       disposed = true;
       observer.disconnect();
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      for (const handle of handles) handle.dispose();
+      for (const entry of referenceHandlesRef.current.values()) entry.dispose();
+      referenceHandlesRef.current.clear();
       controls.dispose();
-      physicalMaterial.dispose();
+      physical.dispose();
       grid.geometry.dispose();
       (grid.material as { dispose: () => void }).dispose();
       renderer.dispose();
       renderer.domElement.remove();
       rendererRef.current = null;
-      meshRef.current = null;
+      stoneRef.current = null;
     };
   }, []);
 
-  /** Continuous rotation, only while it is switched on. */
+  // -------------------------------------------------------------------------
+  // Pointer interaction
+  // -------------------------------------------------------------------------
+  const pointerToNdc = useCallback((event: PointerEvent): Vector2 | null => {
+    const renderer = rendererRef.current;
+    if (!renderer) return null;
+    const bounds = renderer.domElement.getBoundingClientRect();
+    return new Vector2(
+      ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+      -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+    );
+  }, []);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!renderer || !camera || !controls) return;
+
+    const raycaster = new Raycaster();
+    const groundPlane = new Plane(new Vector3(0, 1, 0), 0);
+    const dragPlane = new Plane();
+    const scratch = new Vector3();
+
+    const pickHandle = (ndc: Vector2): StretchHandle | null => {
+      if (!editable || !gizmoGroupRef.current?.visible) return null;
+      raycaster.setFromCamera(ndc, camera);
+      for (const handle of handlesRef.current) {
+        if (raycaster.intersectObject(handle.pickTarget, false).length > 0) return handle;
+      }
+      return null;
+    };
+
+    const pickReference = (ndc: Vector2): string | null => {
+      raycaster.setFromCamera(ndc, camera);
+      for (const [instanceId, entry] of referenceHandlesRef.current) {
+        if (raycaster.intersectObject(entry.pickTarget, false).length > 0) return instanceId;
+      }
+      return null;
+    };
+
+    const setSelected = (instanceId: string | null) => {
+      if (selectedRef.current === instanceId) return;
+      selectedRef.current = instanceId;
+      for (const [id, entry] of referenceHandlesRef.current) {
+        entry.selectionRing.visible = id === instanceId;
+      }
+      selectedCallbackRef.current?.(instanceId);
+      requestRender.current();
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      const ndc = pointerToNdc(event);
+      if (!ndc) return;
+
+      const drag = dragRef.current;
+
+      if (!drag) {
+        // Hover feedback only.
+        const hovered = pickHandle(ndc);
+        let changed = false;
+        for (const handle of handlesRef.current) {
+          const shouldHighlight = handle === hovered;
+          handle.setHighlighted(shouldHighlight);
+          if (shouldHighlight) changed = true;
+        }
+        const overReference = hovered ? null : pickReference(ndc);
+        renderer.domElement.style.cursor = hovered
+          ? 'grab'
+          : overReference
+            ? 'grab'
+            : '';
+        for (const [id, entry] of referenceHandlesRef.current) {
+          const visible = id === selectedRef.current || id === overReference;
+          if (entry.selectionRing.visible !== visible) {
+            entry.selectionRing.visible = visible;
+            changed = true;
+          }
+        }
+        if (changed) requestRender.current();
+        return;
+      }
+
+      raycaster.setFromCamera(ndc, camera);
+
+      if (drag.kind === 'stretch') {
+        const hit = raycaster.ray.intersectPlane(dragPlane, scratch);
+        if (!hit) return;
+
+        // Distance along the drag axis from where the handle started.
+        const offset = hit.clone().sub(drag.origin).dot(drag.axis);
+        const deltaMm = (offset - drag.startOffset) / MM;
+
+        const next = { ...drag.startDimensions };
+
+        if (drag.handle.axis === 'height') {
+          // Height grows from the ground, so the handle's travel is the change.
+          next.height_mm = clampMm(drag.startDimensions.height_mm + deltaMm * drag.handle.direction);
+        } else {
+          /*
+            Length and width are centred on the origin, so a handle sits at half
+            the dimension. Moving it by d changes the dimension by 2d — the far
+            side grows to match, which is what "stretch" looks like.
+          */
+          const key = drag.handle.axis === 'length' ? 'length_mm' : 'width_mm';
+          next[key] = clampMm(drag.startDimensions[key] + deltaMm * drag.handle.direction * 2);
+        }
+
+        applyPreviewScale(next);
+        previewRef.current?.(next);
+        return;
+      }
+
+      // Reference objects slide on the ground.
+      const hit = raycaster.ray.intersectPlane(groundPlane, scratch);
+      if (!hit) return;
+      const target = hit.clone().sub(drag.grabOffset);
+      drag.group.position.x = target.x;
+      drag.group.position.z = target.z;
+      requestRender.current();
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const ndc = pointerToNdc(event);
+      if (!ndc) return;
+
+      const handle = pickHandle(ndc);
+
+      if (handle) {
+        raycaster.setFromCamera(ndc, camera);
+
+        const origin = new Vector3();
+        handle.group.getWorldPosition(origin);
+
+        const [ax, ay, az] = axisVector(handle.axis);
+        const axis = new Vector3(ax, ay, az);
+
+        /*
+          Drag along a plane that contains the axis and faces the camera as
+          squarely as possible. Without this, dragging an axis pointing nearly
+          at the viewer produces wild jumps as the ray grazes the plane.
+        */
+        const viewDirection = camera.getWorldDirection(new Vector3());
+        const planeNormal = viewDirection
+          .clone()
+          .sub(axis.clone().multiplyScalar(viewDirection.dot(axis)))
+          .normalize();
+        dragPlane.setFromNormalAndCoplanarPoint(planeNormal, origin);
+
+        const hit = raycaster.ray.intersectPlane(dragPlane, new Vector3());
+        if (!hit) return;
+
+        dragRef.current = {
+          kind: 'stretch',
+          handle,
+          origin,
+          axis,
+          startOffset: hit.clone().sub(origin).dot(axis),
+          startDimensions: { ...dimensionsRef.current },
+        };
+
+        controls.enabled = false;
+        renderer.domElement.setPointerCapture(event.pointerId);
+        renderer.domElement.style.cursor = 'grabbing';
+        return;
+      }
+
+      const instanceId = pickReference(ndc);
+
+      if (instanceId) {
+        const entry = referenceHandlesRef.current.get(instanceId);
+        if (!entry) return;
+
+        raycaster.setFromCamera(ndc, camera);
+        const hit = raycaster.ray.intersectPlane(groundPlane, new Vector3());
+        if (!hit) return;
+
+        setSelected(instanceId);
+
+        dragRef.current = {
+          kind: 'reference',
+          instanceId,
+          group: entry.group,
+          // Preserve where within the object the grab happened, so it does not
+          // snap its centre to the cursor.
+          grabOffset: hit.clone().sub(entry.group.position),
+        };
+
+        controls.enabled = false;
+        renderer.domElement.setPointerCapture(event.pointerId);
+        renderer.domElement.style.cursor = 'grabbing';
+        return;
+      }
+
+      setSelected(null);
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      dragRef.current = null;
+      controls.enabled = true;
+      renderer.domElement.style.cursor = '';
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      }
+
+      if (drag.kind === 'stretch') {
+        // Clear the preview scale; the committed dimensions rebuild the mesh.
+        const stone = stoneRef.current;
+        if (stone) stone.scale.setScalar(MM);
+        commitRef.current?.(dimensionsRef.current);
+      } else {
+        movedRef.current?.(
+          drag.instanceId,
+          drag.group.position.x / MM,
+          drag.group.position.z / MM,
+        );
+      }
+
+      requestRender.current();
+    };
+
+    /** Stretch preview: scale the existing mesh instead of rebuilding it. */
+    const applyPreviewScale = (next: Dimensions) => {
+      const stone = stoneRef.current;
+      const drag = dragRef.current;
+      if (!stone || drag?.kind !== 'stretch') return;
+
+      const base = drag.startDimensions;
+      stone.scale.set(
+        MM * (next.length_mm / base.length_mm),
+        MM * (next.height_mm / base.height_mm),
+        MM * (next.width_mm / base.width_mm),
+      );
+
+      const box = stone.geometry.boundingBox;
+      if (box) stone.position.y = -box.min.y * stone.scale.y;
+
+      for (const handle of handlesRef.current) positionStretchHandle(handle, next);
+      requestRender.current();
+    };
+
+    const element = renderer.domElement;
+    element.addEventListener('pointermove', onPointerMove);
+    element.addEventListener('pointerdown', onPointerDown);
+    element.addEventListener('pointerup', onPointerUp);
+    element.addEventListener('pointercancel', onPointerUp);
+
+    return () => {
+      element.removeEventListener('pointermove', onPointerMove);
+      element.removeEventListener('pointerdown', onPointerDown);
+      element.removeEventListener('pointerup', onPointerUp);
+      element.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [editable, pointerToNdc]);
+
+  // -------------------------------------------------------------------------
+  // Geometry
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const stone = stoneRef.current;
+    if (!stone) return;
+
+    if (!geometry) {
+      stone.visible = false;
+      requestRender.current();
+      return;
+    }
+
+    stone.geometry = geometry;
+    stone.visible = true;
+    stone.scale.setScalar(MM);
+
+    // Rest the stone on the grid rather than centring it on the origin.
+    const box = geometry.boundingBox;
+    if (box) stone.position.y = -box.min.y * MM;
+
+    requestRender.current();
+  }, [geometry]);
+
+  useEffect(() => {
+    const physical = materialRef.current;
+    if (!physical) return;
+
+    physical.roughness = material.roughness;
+    physical.metalness = material.metalness;
+    physical.clearcoat = material.clearcoat;
+    physical.clearcoatRoughness = 0.25 + 0.5 * (1 - material.clearcoat);
+    physical.needsUpdate = true;
+
+    requestRender.current();
+  }, [material]);
+
+  // -------------------------------------------------------------------------
+  // Gizmo placement
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const gizmoGroup = gizmoGroupRef.current;
+    if (!gizmoGroup) return;
+
+    gizmoGroup.visible = editable && geometry !== null;
+    for (const handle of handlesRef.current) positionStretchHandle(handle, dimensions);
+
+    requestRender.current();
+  }, [dimensions, editable, geometry]);
+
+  // -------------------------------------------------------------------------
+  // Reference objects
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const group = referenceGroupRef.current;
+    if (!group) return;
+
+    const current = referenceHandlesRef.current;
+    const wanted = new Set(references.map((entry) => entry.instanceId));
+
+    // Remove anything no longer placed.
+    for (const [instanceId, entry] of current) {
+      if (wanted.has(instanceId)) continue;
+      group.remove(entry.group);
+      entry.dispose();
+      current.delete(instanceId);
+    }
+
+    // Add or reposition the rest.
+    for (const placed of references) {
+      const definition = referenceById(placed.objectId);
+      if (!definition) continue;
+
+      let entry = current.get(placed.instanceId);
+
+      if (!entry) {
+        const created = createReferenceMesh(definition, definition.name);
+        group.add(created.group);
+        entry = created;
+        current.set(placed.instanceId, created);
+      }
+
+      entry.group.position.set(placed.x * MM, 0, placed.z * MM);
+      entry.selectionRing.visible = placed.instanceId === selectedRef.current;
+    }
+
+    requestRender.current();
+  }, [references]);
+
+  // -------------------------------------------------------------------------
+  // Framing and grid
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const scene = sceneRef.current;
+    if (!camera || !controls || !scene) return;
+
+    // Frame everything in the scene, not just the stone, so adding a person
+    // does not leave it off screen.
+    const referenceReach = references.reduce((furthest, placed) => {
+      const definition = referenceById(placed.objectId);
+      const extent = Math.hypot(placed.x, placed.z) + (definition?.length ?? 0) / 2;
+      return Math.max(furthest, extent);
+    }, 0);
+
+    const sceneExtentMm = Math.max(
+      dimensions.length_mm,
+      dimensions.width_mm,
+      dimensions.height_mm,
+      referenceReach * 2,
+    );
+    const sizeMetres = Math.max(0.01, sceneExtentMm * MM);
+    // 2.4× the largest extent leaves the subject comfortably inside a 42° frame
+    // without it swimming in empty space.
+    const distance = sizeMetres * 2.4;
+
+    camera.position.set(distance * 0.62, distance * 0.48, distance * 0.78);
+    camera.near = Math.max(0.0005, sizeMetres / 200);
+    camera.far = distance * 40;
+    camera.updateProjectionMatrix();
+
+    controls.target.set(0, (dimensions.height_mm * MM) / 2, 0);
+    controls.minDistance = sizeMetres * 0.2;
+    controls.maxDistance = sizeMetres * 20;
+    controls.update();
+
+    const previous = gridRef.current;
+    if (previous) {
+      scene.remove(previous);
+      previous.geometry.dispose();
+      (previous.material as { dispose: () => void }).dispose();
+    }
+
+    // A 10 mm grid up to a sensible count, so squares read as a real unit.
+    const gridSize = sizeMetres * 4;
+    const divisions = Math.min(80, Math.max(10, Math.round(gridSize / (0.01 * MM * 1000))));
+    const grid = new GridHelper(gridSize, divisions, 0x2c313b, 0x1e222a);
+    grid.visible = showGrid;
+    scene.add(grid);
+    gridRef.current = grid;
+
+    requestRender.current();
+    // Re-frames only on an explicit reset or a change of scene contents, not on
+    // every dimension tweak, which would fight the user mid-drag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetSignal, references.length, showGrid]);
+
+  useEffect(() => {
+    if (gridRef.current) {
+      gridRef.current.visible = showGrid;
+      requestRender.current();
+    }
+  }, [showGrid]);
+
+  // -------------------------------------------------------------------------
+  // Auto-rotate
+  // -------------------------------------------------------------------------
   useEffect(() => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -206,8 +724,14 @@ export function StoneViewer({
 
     let handle = 0;
     const tick = () => {
-      controls.update();
-      rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
+      // Pause while dragging, or the scene slides out from under the cursor.
+      if (!dragRef.current) {
+        controls.update();
+        const renderer = rendererRef.current;
+        const scene = sceneRef.current;
+        const camera = cameraRef.current;
+        if (renderer && scene && camera) renderer.render(scene, camera);
+      }
       handle = requestAnimationFrame(tick);
     };
     handle = requestAnimationFrame(tick);
@@ -215,102 +739,18 @@ export function StoneViewer({
     return () => cancelAnimationFrame(handle);
   }, [autoRotate]);
 
-  /** Swap in new geometry. */
-  useEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-
-    if (!geometry) {
-      mesh.visible = false;
-      requestRender.current();
-      return;
-    }
-
-    mesh.geometry = geometry;
-    mesh.visible = true;
-
-    // Author units are millimetres; the scene is metres.
-    mesh.scale.setScalar(MM_TO_SCENE);
-
-    // Rest the stone on the grid rather than centring it on the origin.
-    const box = geometry.boundingBox;
-    if (box) {
-      mesh.position.y = -box.min.y * MM_TO_SCENE;
-    }
-
-    requestRender.current();
-  }, [geometry]);
-
-  /** Material properties update in place — no need to rebuild the mesh. */
-  useEffect(() => {
-    const physicalMaterial = materialRef.current;
-    if (!physicalMaterial) return;
-
-    physicalMaterial.roughness = material.roughness;
-    physicalMaterial.metalness = material.metalness;
-    physicalMaterial.clearcoat = material.clearcoat;
-    physicalMaterial.clearcoatRoughness = 0.25 + 0.5 * (1 - material.clearcoat);
-    physicalMaterial.needsUpdate = true;
-
-    requestRender.current();
-  }, [material]);
-
-  /** Frame the camera on the stone, and resize the grid to suit. */
-  useEffect(() => {
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    const grid = gridRef.current;
-    const scene = sceneRef.current;
-    if (!camera || !controls || !scene) return;
-
-    const sizeMetres = Math.max(0.01, scaleHint * MM_TO_SCENE);
-    // 2.4× the longest dimension leaves the stone comfortably inside the frame
-    // at the 42° field of view without it swimming in empty space.
-    const distance = sizeMetres * 2.4;
-
-    camera.position.set(distance * 0.62, distance * 0.48, distance * 0.78);
-    camera.near = Math.max(0.0005, sizeMetres / 100);
-    camera.far = distance * 40;
-    camera.updateProjectionMatrix();
-
-    controls.target.set(0, sizeMetres * 0.32, 0);
-    controls.minDistance = sizeMetres * 0.5;
-    controls.maxDistance = sizeMetres * 14;
-    controls.update();
-
-    if (grid) {
-      scene.remove(grid);
-      grid.geometry.dispose();
-      (grid.material as { dispose: () => void }).dispose();
-    }
-
-    const gridSize = sizeMetres * 4;
-    const nextGrid = new GridHelper(gridSize, 20, 0x2c313b, 0x1e222a);
-    scene.add(nextGrid);
-    gridRef.current = nextGrid;
-    nextGrid.visible = showGrid;
-
-    requestRender.current();
-  }, [scaleHint, resetSignal, showGrid]);
-
-  useEffect(() => {
-    if (gridRef.current) {
-      gridRef.current.visible = showGrid;
-      requestRender.current();
-    }
-  }, [showGrid]);
-
   return (
     <div
       ref={containerRef}
       className={[styles.viewport, className ?? ''].filter(Boolean).join(' ')}
-      // The canvas is a graphical control; describe it for assistive tech.
       role="img"
-      aria-label="Interactive 3D preview of the generated stone. Drag to orbit, scroll to zoom."
+      aria-label={
+        editable
+          ? 'Interactive 3D preview. Drag the coloured arrows to stretch the stone, drag reference objects to move them, drag elsewhere to orbit.'
+          : 'Interactive 3D preview of the generated stone. Drag to orbit, scroll to zoom.'
+      }
     />
   );
 }
 
-/** Exported so the exporter can reuse the same unit convention. */
-export { MM_TO_SCENE };
-export type { Vector3 };
+export { MM };

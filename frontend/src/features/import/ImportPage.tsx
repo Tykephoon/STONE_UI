@@ -21,7 +21,6 @@ import {
   type ReadingRecord,
 } from '../../data/store';
 import { estimateUsage } from '../../data/db';
-import { forgetSampleFlag } from '../../data/sample';
 import { DownloadIcon, InboxIcon, PlusIcon } from '../../components/layout/Icons';
 import { Button } from '../../components/ui/Button';
 import { Card, CardBody, CardHeader } from '../../components/ui/Card';
@@ -588,8 +587,7 @@ export function ImportPage(): JSX.Element {
             toast.success('Readings deleted');
           } else {
             await clearEverything();
-            await forgetSampleFlag();
-            toast.success('Everything deleted', 'Reload to start from the sample data again.');
+            toast.success('Everything deleted');
           }
           setConfirmClear(null);
           devicesState.reload();

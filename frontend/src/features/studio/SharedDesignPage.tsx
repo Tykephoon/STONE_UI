@@ -37,18 +37,6 @@ export function SharedDesignPage(): JSX.Element {
 
   const { geometry, isGenerating, stats } = useStoneGeometry(params);
 
-  const longestDimension = useMemo(
-    () =>
-      params
-        ? Math.max(
-            params.dimensions.length_mm,
-            params.dimensions.width_mm,
-            params.dimensions.height_mm,
-          )
-        : 100,
-    [params],
-  );
-
   const handleExport = useCallback(
     async (format: 'glb' | 'obj') => {
       if (!geometry || !params) return;
@@ -104,7 +92,7 @@ export function SharedDesignPage(): JSX.Element {
           <StoneViewer
             geometry={geometry}
             material={params.material}
-            scaleHint={longestDimension}
+            dimensions={params.dimensions}
             showGrid={showGrid}
             autoRotate={autoRotate}
           />

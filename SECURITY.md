@@ -144,6 +144,9 @@ and share links come from whoever sent them.
   cannot be decoded shows an error rather than throwing.
 - **Storage limits.** Imports are capped at 100,000 readings and 500 designs, so
   a pathological file cannot exhaust the origin's storage quota.
+- **STL export.** Written from the same in-memory geometry the viewer shows, with
+  no server round trip and no external tool. The watertight check is advisory —
+  it reports what a slicer will find, it does not modify the mesh.
 
 ---
 
@@ -197,8 +200,8 @@ switching machines.
 **I imported the wrong file.** Import → Delete all readings, then re-import.
 Devices and designs are untouched.
 
-**I want to wipe the browser copy.** Import → Delete everything. Reload and the
-sample dataset returns.
+**I want to wipe the browser copy.** Import → Delete everything. The app returns
+to its empty state; there is no sample data to fall back to.
 
 **A shared link is circulating and I want it dead.** You cannot revoke it — the
 design travels inside the link. It only ever exposed that one stone.
