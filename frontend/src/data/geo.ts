@@ -108,7 +108,7 @@ export function buildMapStyle(options: MapStyleOptions = {}): Record<string, unk
   ];
 
   if (options.terrain) {
-    sources['terrain-dem'] = {
+    const dem = {
       type: 'raster-dem',
       tiles: [TERRAIN_TILE_URL],
       tileSize: 256,
@@ -119,13 +119,20 @@ export function buildMapStyle(options: MapStyleOptions = {}): Record<string, unk
       attribution: TERRAIN_ATTRIBUTION,
     };
 
+    // Two sources over the same tiles, on MapLibre's own advice: terrain and
+    // hillshade want the data at different resolutions, and sharing one source
+    // makes each degrade the other's cache. The tiles are fetched once and
+    // served from the HTTP cache to the second source.
+    sources['terrain-dem'] = dem;
+    sources['hillshade-dem'] = { ...dem };
+
     // Shading from the same elevation model. On the street basemap this is
     // most of what makes relief legible; over imagery it deepens shadow that
     // the photograph already has, so it is kept faint.
     layers.push({
       id: 'hillshade',
       type: 'hillshade',
-      source: 'terrain-dem',
+      source: 'hillshade-dem',
       paint: {
         'hillshade-exaggeration': satellite ? 0.18 : 0.45,
         'hillshade-shadow-color': '#05070a',

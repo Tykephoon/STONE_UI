@@ -7,7 +7,22 @@
   border: 1px solid var(--border-subtle);
 }
 
-.map {
+/*
+ * Deliberately over-specific, and it has to stay that way.
+ *
+ * MapLibre's own stylesheet sets `.maplibregl-map { position: relative }`, and
+ * it adds that class to this very element. Both selectors are a single class,
+ * so the winner is decided by load order — and MapLibre's CSS always loads
+ * later: this file is pulled into the eager main stylesheet by LazyMapView's
+ * placeholder, while maplibre-gl.css rides in the lazy chunk that only arrives
+ * when a map is actually rendered.
+ *
+ * Losing that race makes the container `position: relative` with no height, so
+ * it collapses to zero and the map is invisible — a canvas is created, tiles
+ * load, no error is reported, and nothing is drawn. Scoping under `.wrapper`
+ * decides the question by specificity instead of by chance.
+ */
+.wrapper .map {
   position: absolute;
   inset: 0;
 }
