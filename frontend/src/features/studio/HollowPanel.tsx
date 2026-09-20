@@ -169,9 +169,10 @@ export function HollowPanel({
 
           <FieldGroup title={`Internal supports (${config.supports.length})`}>
             <p className={styles.note}>
-              Posts inside the cavity, from the base up to the ceiling. Drag them in the viewport
-              to position them. Useful on a wide, flat-topped stone where the roof would otherwise
-              sag.
+              Posts inside the cavity, from the base up to the ceiling. The stone turns
+              translucent on this tab so they can be seen and dragged; each one stays inside the
+              cavity and stops where the roof does. Useful on a wide, flat-topped stone, where
+              the roof would otherwise sag.
             </p>
 
             {config.supports.length > 0 && (

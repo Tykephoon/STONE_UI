@@ -1,6 +1,6 @@
 /**
- * Scene construction helpers: reference-object meshes, their labels, and the
- * surface control points.
+ * Scene construction helpers: reference-object meshes, their labels, the
+ * surface control points, and the internal support posts.
  *
  * Kept out of the viewer so that file is about interaction rather than about
  * building geometry.
@@ -164,6 +164,112 @@ export function createReferenceMesh(object: ReferenceObject, label: string): Ref
       (selectionRing.material as MeshBasicMaterial).dispose();
       sprite.material.map?.dispose();
       sprite.material.dispose();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal support posts
+// ---------------------------------------------------------------------------
+
+export interface SupportHandle {
+  group: Group;
+  /** A slightly fattened cylinder, so a thin post is still easy to grab. */
+  pickTarget: Mesh;
+  selectionRing: Mesh;
+  /** Re-shape in place when the post is dragged or resized. */
+  update: (diameter: number, baseY: number, topY: number) => void;
+  setState: (state: 'idle' | 'hover' | 'active') => void;
+  dispose: () => void;
+}
+
+const SUPPORT_IDLE = 0x6da7ec;
+const SUPPORT_ACTIVE = 0xf2b45c;
+
+/**
+ * A post inside the cavity, drawn so it can be seen through the shell.
+ *
+ * The post is rendered at its true diameter but picked against a wider
+ * cylinder. A 3 mm post inside a 200 mm stone is a couple of pixels on screen,
+ * and asking someone to hit that exactly would make the feature unusable.
+ */
+export function createSupportMesh(): SupportHandle {
+  const group = new Group();
+
+  // Unit cylinder: one unit tall, one unit across, centred. Every instance is
+  // the same shape at a different scale, so one geometry serves all of them
+  // and resizing is a scale change rather than a rebuild.
+  const geometry = new CylinderGeometry(0.5, 0.5, 1, 20, 1, false);
+
+  const material = new MeshStandardMaterial({
+    color: new Color(SUPPORT_IDLE),
+    roughness: 0.4,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.92,
+  });
+
+  const post = new Mesh(geometry, material);
+  group.add(post);
+
+  const pickGeometry = new CylinderGeometry(0.5, 0.5, 1, 10, 1, false);
+  const pickTarget = new Mesh(
+    pickGeometry,
+    new MeshBasicMaterial({ visible: false, depthWrite: false }),
+  );
+  group.add(pickTarget);
+
+  const selectionRing = new Mesh(
+    new RingGeometry(0.5, 0.62, 40),
+    new MeshBasicMaterial({
+      color: SUPPORT_ACTIVE,
+      side: DoubleSide,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    }),
+  );
+  selectionRing.rotation.x = -Math.PI / 2;
+  // Drawn over the shell: the ring's job is to say which post is selected,
+  // and a post is always behind at least one wall.
+  selectionRing.renderOrder = 998;
+  selectionRing.visible = false;
+  group.add(selectionRing);
+
+  const update = (diameter: number, baseY: number, topY: number) => {
+    const height = Math.max(0.0005, (topY - baseY) * MM);
+    const width = Math.max(0.0005, diameter * MM);
+
+    post.scale.set(width, height, width);
+    post.position.y = baseY * MM + height / 2;
+
+    // At least 8 mm across to grab, whatever the post's real diameter.
+    const grab = Math.max(width, 0.008);
+    pickTarget.scale.set(grab, height, grab);
+    pickTarget.position.y = post.position.y;
+
+    selectionRing.scale.set(Math.max(width * 1.8, 0.012), Math.max(width * 1.8, 0.012), 1);
+    selectionRing.position.y = baseY * MM + 0.0006;
+  };
+
+  const setState = (state: 'idle' | 'hover' | 'active') => {
+    material.color.setHex(state === 'idle' ? SUPPORT_IDLE : SUPPORT_ACTIVE);
+    material.opacity = state === 'idle' ? 0.92 : 1;
+  };
+
+  return {
+    group,
+    pickTarget,
+    selectionRing,
+    update,
+    setState,
+    dispose: () => {
+      geometry.dispose();
+      material.dispose();
+      pickGeometry.dispose();
+      (pickTarget.material as MeshBasicMaterial).dispose();
+      selectionRing.geometry.dispose();
+      (selectionRing.material as MeshBasicMaterial).dispose();
     },
   };
 }

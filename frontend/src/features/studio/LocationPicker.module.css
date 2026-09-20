@@ -60,13 +60,23 @@
   color: var(--status-warning);
 }
 
+/*
+ * The result list floats over what follows it rather than pushing it down.
+ * Reflowing the map on every keystroke is both expensive and disorienting.
+ */
 .results {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
   list-style: none;
   max-height: 220px;
   overflow-y: auto;
   background: var(--surface-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 12px 28px rgb(0 0 0 / 0.45));
 }
 
 .resultButton {
@@ -79,7 +89,8 @@
   transition: background-color var(--duration-fast) var(--ease-out);
 }
 
-.resultButton:hover {
+.resultButton:hover,
+.resultActive {
   background: var(--surface-3);
 }
 
@@ -146,6 +157,126 @@
 
 .hint {
   font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-relaxed);
+}
+
+/* ---- Map view controls ------------------------------------------------ */
+
+.viewRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.segment,
+.segmentOn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 var(--space-3);
+  border-radius: calc(var(--radius-md) - 2px);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+/* The standalone terrain button needs the frame the group gives its children. */
+.viewRow > .segment,
+.viewRow > .segmentOn {
+  height: 30px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-inset);
+}
+
+.segment:hover {
+  color: var(--text-primary);
+}
+
+.segmentOn {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-subtle, transparent);
+}
+
+.viewRow > .segmentOn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- Ground readout --------------------------------------------------- */
+
+.terrainStatus {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.terrain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.terrainHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong, var(--border-default));
+  flex-shrink: 0;
+}
+
+.terrainStats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+}
+
+.terrainStats dt {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.terrainStats dd {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.terrainNote {
+  font-size: var(--text-2xs);
   color: var(--text-muted);
   line-height: var(--leading-relaxed);
 }

@@ -59,17 +59,29 @@ export function restOnPlate(positions: Float32Array): Float32Array {
   return lowered;
 }
 
-export function buildHollowParts(
+/**
+ * Hollow the shape, and nothing else.
+ *
+ * Split out from the assembly below because it is the expensive half — it
+ * walks every triangle twice and clips the whole mesh — and because it depends
+ * on none of the things the user changes most often. Dragging a support post
+ * or loosening the base fit must not re-hollow the stone.
+ */
+export function buildShellFor(
   geometry: BufferGeometry,
-  settings: HollowExportSettings,
-): HollowBuild {
-  const solid = restOnPlate(geometry.getAttribute('position').array as Float32Array);
-
-  const shell = buildHollowShell(solid, {
+  settings: Pick<HollowExportSettings, 'wallThickness' | 'openingHeight'>,
+): HollowResult {
+  return buildHollowShell(restOnPlate(geometry.getAttribute('position').array as Float32Array), {
     wallThickness: settings.wallThickness,
     openingHeight: settings.openingHeight,
   });
+}
 
+/** Add the posts and the base to an already-hollowed shell. */
+export function assembleHollowParts(
+  shell: HollowResult,
+  settings: Pick<HollowExportSettings, 'fit' | 'plugDepth' | 'supports'>,
+): HollowBuild {
   // Nothing to add to, and nothing to close: the caller falls back to the solid.
   if (!shell.feasible) {
     return {
@@ -122,6 +134,14 @@ export function buildHollowParts(
     base: { positions: base.positions, size: base.size },
     droppedSupports: dropped,
   };
+}
+
+/** Hollow and assemble in one step. */
+export function buildHollowParts(
+  geometry: BufferGeometry,
+  settings: HollowExportSettings,
+): HollowBuild {
+  return assembleHollowParts(buildShellFor(geometry, settings), settings);
 }
 
 export interface ExportedFiles {

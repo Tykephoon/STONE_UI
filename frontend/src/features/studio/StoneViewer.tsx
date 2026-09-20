@@ -14,6 +14,9 @@
  *     rebuilds in about 10 ms, against 150 ms at level 6 — and the full-detail
  *     mesh is rebuilt once on release.
  *   - **Reference objects** slide along the ground plane.
+ *   - **Support posts** slide on the cut plane inside the stone, which turns
+ *     translucent while they are being edited — there is otherwise no way to
+ *     see, let alone grab, something sealed inside a solid.
  *   - **Empty space** orbits the camera, as usual.
  *
  * Rendering is on demand: a frame is drawn when something changes, not sixty
@@ -46,6 +49,7 @@ import {
   MM,
   createControlHandle,
   createReferenceMesh,
+  createSupportMesh,
   positionControlHandle,
   screenScaleFor,
   setControlPull,
@@ -57,6 +61,8 @@ import {
   type SculptParams,
 } from './controlPoints';
 import { type PlacedReference, referenceById } from './referenceObjects';
+import { type Point2, clampIntoLoop } from './baseAndSupports';
+import type { SupportHandle } from './sceneHelpers';
 import styles from './StoneViewer.module.css';
 
 export interface Dimensions {
@@ -88,7 +94,38 @@ export interface StoneViewerProps {
   /** Fires when a reference object finishes being dragged. */
   onReferenceMoved?: (instanceId: string, x: number, z: number) => void;
   onReferenceSelected?: (instanceId: string | null) => void;
+  /** Support posts inside the cavity, with the extent each one spans. */
+  supports?: PlacedSupport[];
+  /**
+   * The cavity outline at the cut plane, in millimetres. A dragged post is
+   * kept inside it; without one, a post can be dragged anywhere.
+   */
+  supportBoundary?: Point2[];
+  selectedSupportId?: string | null;
+  onSupportMoved?: (id: string, x: number, z: number) => void;
+  onSupportSelected?: (id: string | null) => void;
+  /**
+   * Makes the stone translucent.
+   *
+   * Support posts live inside a solid object, so there is no arrangement of
+   * camera and lighting that would reveal them. Editing them means seeing
+   * through the shell.
+   */
+  xray?: boolean;
   className?: string;
+}
+
+/** A support post, resolved to the span it actually occupies in the stone. */
+export interface PlacedSupport {
+  id: string;
+  /** Millimetres, in the stone's own frame with its base at zero. */
+  x: number;
+  z: number;
+  diameter: number;
+  /** The cut plane the post stands on. */
+  baseY: number;
+  /** Where the cavity ceiling stops it. */
+  topY: number;
 }
 
 const clampPull = (value: number) => Math.min(1, Math.max(-1, value));
@@ -111,6 +148,15 @@ type DragState =
       group: Group;
       grabOffset: Vector3;
     }
+  | {
+      kind: 'support';
+      id: string;
+      handle: SupportHandle;
+      diameter: number;
+      /** Offset within the post where the grab landed, in scene units. */
+      grabOffsetX: number;
+      grabOffsetZ: number;
+    }
   | null;
 
 export function StoneViewer({
@@ -128,6 +174,12 @@ export function StoneViewer({
   onSculptCommit,
   onReferenceMoved,
   onReferenceSelected,
+  supports = [],
+  supportBoundary,
+  selectedSupportId = null,
+  onSupportMoved,
+  onSupportSelected,
+  xray = false,
   className,
 }: StoneViewerProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -147,9 +199,16 @@ export function StoneViewer({
   const referenceHandlesRef = useRef<
     Map<string, { group: Group; pickTarget: Mesh; selectionRing: Mesh; dispose: () => void }>
   >(new Map());
+  const supportGroupRef = useRef<Group | null>(null);
+  const supportHandlesRef = useRef<Map<string, SupportHandle>>(new Map());
 
   const dragRef = useRef<DragState>(null);
   const selectedRef = useRef<string | null>(null);
+  const selectedSupportRef = useRef<string | null>(selectedSupportId);
+  const supportBoundaryRef = useRef<Point2[] | undefined>(supportBoundary);
+  supportBoundaryRef.current = supportBoundary;
+  const supportsRef = useRef<PlacedSupport[]>(supports);
+  supportsRef.current = supports;
   const dimensionsRef = useRef<Dimensions>(dimensions);
   dimensionsRef.current = dimensions;
   const pullsRef = useRef<number[]>(sculpt?.pulls ?? []);
@@ -165,6 +224,10 @@ export function StoneViewer({
   movedRef.current = onReferenceMoved;
   const selectedCallbackRef = useRef(onReferenceSelected);
   selectedCallbackRef.current = onReferenceSelected;
+  const supportMovedRef = useRef(onSupportMoved);
+  supportMovedRef.current = onSupportMoved;
+  const supportSelectedRef = useRef(onSupportSelected);
+  supportSelectedRef.current = onSupportSelected;
 
   const requestRender = useRef<() => void>(() => undefined);
 
@@ -254,6 +317,10 @@ export function StoneViewer({
     scene.add(referenceGroup);
     referenceGroupRef.current = referenceGroup;
 
+    const supportGroup = new Group();
+    scene.add(supportGroup);
+    supportGroupRef.current = supportGroup;
+
     const handles: ControlHandle[] = Array.from({ length: CONTROL_POINT_COUNT }, (_, index) =>
       createControlHandle(index),
     );
@@ -311,6 +378,8 @@ export function StoneViewer({
       for (const handle of handles) handle.dispose();
       for (const entry of referenceHandlesRef.current.values()) entry.dispose();
       referenceHandlesRef.current.clear();
+      for (const entry of supportHandlesRef.current.values()) entry.dispose();
+      supportHandlesRef.current.clear();
       controls.dispose();
       physical.dispose();
       grid.geometry.dispose();
@@ -343,6 +412,9 @@ export function StoneViewer({
 
     const raycaster = new Raycaster();
     const groundPlane = new Plane(new Vector3(0, 1, 0), 0);
+    const UP = new Vector3(0, 1, 0);
+    // Re-aimed at the grabbed post's mid-height on each pointer down.
+    const supportPlane = new Plane(new Vector3(0, 1, 0), 0);
     const dragPlane = new Plane();
     const scratch = new Vector3();
 
@@ -393,6 +465,42 @@ export function StoneViewer({
       return closest;
     };
 
+    /**
+     * Posts are picked before reference objects and before the stone itself:
+     * they are the smallest thing on screen and the only one that is
+     * deliberately behind a wall, so anything else would win every contest.
+     */
+    const pickSupport = (ndc: Vector2): string | null => {
+      const group = supportGroupRef.current;
+      if (!group || !group.visible) return null;
+
+      raycaster.setFromCamera(ndc, camera);
+
+      let closest: string | null = null;
+      let closestDistance = Number.POSITIVE_INFINITY;
+
+      for (const [id, entry] of supportHandlesRef.current) {
+        const hit = raycaster.intersectObject(entry.pickTarget, false)[0];
+        if (hit && hit.distance < closestDistance) {
+          closestDistance = hit.distance;
+          closest = id;
+        }
+      }
+
+      return closest;
+    };
+
+    const setSupportSelected = (id: string | null) => {
+      if (selectedSupportRef.current === id) return;
+      selectedSupportRef.current = id;
+      for (const [entryId, entry] of supportHandlesRef.current) {
+        entry.selectionRing.visible = entryId === id;
+        entry.setState(entryId === id ? 'active' : 'idle');
+      }
+      supportSelectedRef.current?.(id);
+      requestRender.current();
+    };
+
     const pickReference = (ndc: Vector2): string | null => {
       raycaster.setFromCamera(ndc, camera);
       for (const [instanceId, entry] of referenceHandlesRef.current) {
@@ -425,12 +533,19 @@ export function StoneViewer({
           handle.setState(handle === hovered ? 'hover' : 'idle');
           if (handle === hovered) changed = true;
         }
-        const overReference = hovered ? null : pickReference(ndc);
-        renderer.domElement.style.cursor = hovered
-          ? 'grab'
-          : overReference
-            ? 'grab'
-            : '';
+        const overSupport = hovered ? null : pickSupport(ndc);
+        const overReference = hovered || overSupport ? null : pickReference(ndc);
+        renderer.domElement.style.cursor = hovered || overSupport || overReference ? 'grab' : '';
+
+        for (const [id, entry] of supportHandlesRef.current) {
+          const active = id === selectedSupportRef.current || id === overSupport;
+          entry.setState(active ? 'active' : 'idle');
+          if (entry.selectionRing.visible !== active) {
+            entry.selectionRing.visible = active;
+            changed = true;
+          }
+        }
+        if (overSupport) changed = true;
         for (const [id, entry] of referenceHandlesRef.current) {
           const visible = id === selectedRef.current || id === overReference;
           if (entry.selectionRing.visible !== visible) {
@@ -462,6 +577,30 @@ export function StoneViewer({
 
         setControlPull(drag.handle, next);
         previewRef.current?.(pulls);
+        requestRender.current();
+        return;
+      }
+
+      if (drag.kind === 'support') {
+        // Posts slide on the cut plane they stand on, not on the floor: a
+        // horizontal plane at the grab height keeps the post under the cursor
+        // however far the camera is tilted.
+        const hit = raycaster.ray.intersectPlane(supportPlane, scratch);
+        if (!hit) return;
+
+        let x = (hit.x - drag.grabOffsetX) / MM;
+        let z = (hit.z - drag.grabOffsetZ) / MM;
+
+        const boundary = supportBoundaryRef.current;
+        if (boundary && boundary.length >= 3) {
+          // Half the post, plus a shade, so it never overhangs the floor it
+          // has to be printed on.
+          const clamped = clampIntoLoop(boundary, x, z, drag.diameter / 2 + 0.6);
+          x = clamped.x;
+          z = clamped.z;
+        }
+
+        drag.handle.group.position.set(x * MM, 0, z * MM);
         requestRender.current();
         return;
       }
@@ -538,6 +677,40 @@ export function StoneViewer({
         return;
       }
 
+      const supportId = pickSupport(ndc);
+
+      if (supportId) {
+        const entry = supportHandlesRef.current.get(supportId);
+        const placed = supportsRef.current.find((post) => post.id === supportId);
+        if (!entry || !placed) return;
+
+        raycaster.setFromCamera(ndc, camera);
+        supportPlane.setFromNormalAndCoplanarPoint(
+          UP,
+          new Vector3(0, (placed.baseY + placed.topY) / 2 * MM, 0),
+        );
+
+        const hit = raycaster.ray.intersectPlane(supportPlane, new Vector3());
+        if (!hit) return;
+
+        setSelected(null);
+        setSupportSelected(supportId);
+
+        dragRef.current = {
+          kind: 'support',
+          id: supportId,
+          handle: entry,
+          diameter: placed.diameter,
+          grabOffsetX: hit.x - entry.group.position.x,
+          grabOffsetZ: hit.z - entry.group.position.z,
+        };
+
+        controls.enabled = false;
+        renderer.domElement.setPointerCapture(event.pointerId);
+        renderer.domElement.style.cursor = 'grabbing';
+        return;
+      }
+
       const instanceId = pickReference(ndc);
 
       if (instanceId) {
@@ -549,6 +722,7 @@ export function StoneViewer({
         if (!hit) return;
 
         setSelected(instanceId);
+        setSupportSelected(null);
 
         dragRef.current = {
           kind: 'reference',
@@ -566,6 +740,7 @@ export function StoneViewer({
       }
 
       setSelected(null);
+      setSupportSelected(null);
     };
 
     const onPointerUp = (event: PointerEvent) => {
@@ -584,6 +759,12 @@ export function StoneViewer({
         // Commit the pulls accumulated during the drag, not the stale prop —
         // reading the prop here was why the previous gizmo snapped back.
         commitRef.current?.([...pullsRef.current]);
+      } else if (drag.kind === 'support') {
+        supportMovedRef.current?.(
+          drag.id,
+          drag.handle.group.position.x / MM,
+          drag.handle.group.position.z / MM,
+        );
       } else {
         movedRef.current?.(
           drag.instanceId,
@@ -776,6 +957,71 @@ export function StoneViewer({
   }, [references]);
 
   // -------------------------------------------------------------------------
+  // Support posts
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const group = supportGroupRef.current;
+    if (!group) return;
+
+    const current = supportHandlesRef.current;
+    const wanted = new Set(supports.map((post) => post.id));
+
+    for (const [id, entry] of current) {
+      if (wanted.has(id)) continue;
+      group.remove(entry.group);
+      entry.dispose();
+      current.delete(id);
+    }
+
+    for (const post of supports) {
+      let entry = current.get(post.id);
+
+      if (!entry) {
+        entry = createSupportMesh();
+        group.add(entry.group);
+        current.set(post.id, entry);
+      }
+
+      // Skip the position while this post is being dragged: the pointer owns
+      // it until release, and writing the last committed value back mid-drag
+      // would fight the cursor.
+      const drag = dragRef.current;
+      if (!(drag?.kind === 'support' && drag.id === post.id)) {
+        entry.group.position.set(post.x * MM, 0, post.z * MM);
+      }
+
+      entry.update(post.diameter, post.baseY, post.topY);
+      const selected = post.id === selectedSupportId;
+      entry.selectionRing.visible = selected;
+      entry.setState(selected ? 'active' : 'idle');
+    }
+
+    selectedSupportRef.current = selectedSupportId;
+    group.visible = supports.length > 0;
+
+    requestRender.current();
+  }, [supports, selectedSupportId]);
+
+  /**
+   * X-ray the stone while its insides are being edited.
+   *
+   * `depthWrite` has to go with the opacity. Left on, the shell would still
+   * fill the depth buffer and hide the very posts it has been made
+   * see-through for.
+   */
+  useEffect(() => {
+    const physical = materialRef.current;
+    if (!physical) return;
+
+    physical.transparent = xray;
+    physical.opacity = xray ? 0.26 : 1;
+    physical.depthWrite = !xray;
+    physical.needsUpdate = true;
+
+    requestRender.current();
+  }, [xray]);
+
+  // -------------------------------------------------------------------------
   // Framing and grid
   // -------------------------------------------------------------------------
   useEffect(() => {
@@ -877,7 +1123,7 @@ export function StoneViewer({
       role="img"
       aria-label={
         editable
-          ? 'Interactive 3D preview. Drag the coloured arrows to stretch the stone, drag reference objects to move them, drag elsewhere to orbit.'
+          ? 'Interactive 3D preview. Drag the handles on the surface to sculpt the stone, drag reference objects and internal support posts to move them, drag elsewhere to orbit.'
           : 'Interactive 3D preview of the generated stone. Drag to orbit, scroll to zoom.'
       }
     />

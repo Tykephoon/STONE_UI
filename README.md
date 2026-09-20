@@ -19,8 +19,8 @@ GitHub Pages ──► static bundle ──► IndexedDB in your browser
                                     └── CSV / JSON import, or typed by hand
 ```
 
-There is nothing to deploy beyond the static site, and nothing to pay for. Maps
-come from OpenStreetMap, which needs no key.
+There is nothing to deploy beyond the static site, and nothing to pay for.
+Maps, aerial imagery, and elevation data all come from keyless sources.
 
 ### What that costs you
 
@@ -114,7 +114,7 @@ Re-importing the same file is safe: records merge by id rather than duplicating.
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `:5173` |
-| `npm test` | 141 tests — CSV import, generator, sculpting, hollowing, printability |
+| `npm test` | 182 tests — CSV import, generator, sculpting, hollowing, terrain, printability |
 | `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
@@ -155,6 +155,42 @@ bytes and a shared link reproduces exactly what its author saw.
   optional convex-polytope intersection for fracture faces → taper and flatten →
   exact rescale → normals blended smooth-to-flat, plus vertex colours for
   mineral veining and crevice shading.
+
+### Where a stone comes from
+
+Coordinates alone only made a stone *repeatable* per place — every location got
+the same range of shapes, shuffled differently. The **Place** tab reads the
+actual ground instead.
+
+- **Search as you type.** Results appear while typing, debounced and aborted on
+  each keystroke. The geocoder's one-request-per-second policy is enforced by a
+  queue in `data/geo.ts`, not by trusting the input to behave.
+- **Aerial imagery over real terrain.** Satellite or street basemap, with an
+  elevation model that can be tilted and flown around — the keyless equivalent
+  of the Google Earth view. (Google's own tiles need a browser key, which in a
+  static bundle is a published key, and their terms forbid deriving a dataset
+  from their imagery. See SECURITY.md.)
+- **Drop a pin, measure the ground.** The elevation for about 1.8 km around the
+  pin is read directly from the model and reduced to relief, mean slope,
+  roughness, and aspect. The panel reports all four, and names the place —
+  "Alpine, broken", "Rolling hills", "Flat ground".
+- **Shape the stone from it.** Relief sets the height, how linear the landform
+  is sets the width, curvature decides whether it bulges or pinches, roughness
+  splits between surface detail and erosion, and the heightfield around the pin
+  becomes the control-point pulls — so the silhouette follows the landform.
+  Where imagery is readable, the colour is averaged from it and muted to a
+  stone range.
+
+Two things it will not do. **The printed length is never changed**: the ground
+decides the shape, you decide the size. **The underside always flattens**, even
+under a cliff, because a faithful transcription of a hillside is a print that
+needs support everywhere.
+
+Elevation is a measured global model, accurate to roughly thirty metres
+horizontally — sampling known summits reads Mount Washington at 1916 m against
+a true 1917 m, and Badwater at −77 m against −86 m. It is not live, because no
+free source is and radar-measured ground does not move by the minute. The
+imagery is whatever Esri publishes today.
 
 ### Sculpting it
 
@@ -318,14 +354,16 @@ frontend/
       db.ts              IndexedDB wrapper
       store.ts           Queries, mutations, in-memory cache
       csv.ts             Parsing, column mapping, validation, export
-      geo.ts             OpenStreetMap tiles and geocoding
+      geo.ts             Basemaps, aerial imagery, geocoding, ground colour
+      terrain.ts         Real elevation: tiles in, landform measurements out
       export.ts          File downloads and backups
     components/        ui · charts · layout · map · filters
     features/
       dashboard/ readings/ devices/ import/
       studio/            generator · viewer · gizmos · printing · references
     hooks/  lib/  styles/
-  test/                CSV import · generator · sculpting · placement · printability
+  test/                CSV import · generator · sculpting · hollowing · terrain
+                       · placement · printability
 
 backend/               Optional. Unused by the frontend — see Live ingest.
 ```

@@ -26,10 +26,12 @@ import { useAction, useAsync } from '../../hooks/useAsync';
 import { useLocalPreference } from '../../hooks/useLocalPreference';
 import { formatCount } from '../../lib/format';
 import { formatRelative } from '../../lib/time';
-import { LocationPicker, type PickedLocation } from './LocationPicker';
+import { ceilingHeightAt } from './baseAndSupports';
+import { LocationPicker, type PickedLocation, type TerrainReading } from './LocationPicker';
+import { deriveStoneFromTerrain } from './terrainStone';
 import { PrintPanel } from './PrintPanel';
 import { ScalePanel } from './ScalePanel';
-import { StoneViewer } from './StoneViewer';
+import { type PlacedSupport, StoneViewer } from './StoneViewer';
 import { StudioControls } from './StudioControls';
 import {
   type PlacedReference,
@@ -40,7 +42,7 @@ import { buildStl } from './printing';
 import { SUPPORT_DEFAULT_DIAMETER } from './baseAndSupports';
 import { emptySculpt, isSculpted } from './controlPoints';
 import { HollowPanel, type HollowConfig } from './HollowPanel';
-import { buildHollowParts, exportHollowStl } from './hollowExport';
+import { assembleHollowParts, buildShellFor, exportHollowStl } from './hollowExport';
 import {
   buildParameterLink,
   buildViewerLink,
@@ -227,6 +229,32 @@ export function StudioPage(): JSX.Element {
     [],
   );
 
+  /**
+   * Rebuild the stone from the ground that was measured at the pin.
+   *
+   * Explicit rather than automatic: a stone the user has already shaped by
+   * hand should not be overwritten because they nudged the map. The derivation
+   * keeps the printed length and replaces everything the terrain has an
+   * opinion about — proportions, surface, silhouette, and colour when the
+   * imagery came back.
+   */
+  const handleShapeFromTerrain = useCallback(
+    (reading: TerrainReading) => {
+      const derived = deriveStoneFromTerrain(
+        params,
+        reading.sample,
+        reading.summary,
+        reading.ground,
+      );
+
+      applyParams(derived.params);
+      setResetSignal((value) => value + 1);
+      setIsDirty(true);
+      toast.success(derived.character, derived.notes[0] ?? 'Shaped from the elevation at the pin.');
+    },
+    [params, applyParams, toast],
+  );
+
   const handleDimensionDraft = useCallback((axis: Axis, value: string) => {
     setDimensionDrafts((current) => ({ ...current, [axis]: value }));
 
@@ -386,15 +414,31 @@ export function StudioPage(): JSX.Element {
    * Deferred behind the geometry so it never runs mid-drag: hollowing walks
    * every triangle twice and would stall a sculpt.
    */
-  const hollowBuild = useMemo(() => {
+  const hollowShell = useMemo(() => {
     if (!geometry || !hollow.enabled || isSculpting) return null;
     try {
-      return buildHollowParts(geometry, hollow);
+      return buildShellFor(geometry, hollow);
     } catch {
       // A shape the hollower cannot handle must not take the studio down.
       return null;
     }
-  }, [geometry, hollow, isSculpting]);
+  }, [geometry, hollow.enabled, hollow.wallThickness, hollow.openingHeight, isSculpting]);
+
+  /**
+   * The cheap half, re-run on its own.
+   *
+   * Dragging a post changes `hollow.supports` several times a second. Keeping
+   * this separate from the shell means those changes cost a base and a handful
+   * of cylinders, not a full re-hollowing of the mesh.
+   */
+  const hollowBuild = useMemo(() => {
+    if (!hollowShell) return null;
+    try {
+      return assembleHollowParts(hollowShell, hollow);
+    } catch {
+      return null;
+    }
+  }, [hollowShell, hollow.fit, hollow.plugDepth, hollow.supports]);
 
   const hollowReport = useMemo(
     () =>
@@ -408,6 +452,47 @@ export function StudioPage(): JSX.Element {
         : null,
     [hollowBuild],
   );
+
+  /**
+   * Resolve each post to the span it actually occupies, for the viewport.
+   *
+   * The ceiling is measured against the built shell rather than guessed from
+   * the stone's height, so a post shown in the preview is the same post that
+   * gets written to the file — including when it is in a low corner and the
+   * roof is much closer than it looks.
+   */
+  const placedSupports = useMemo<PlacedSupport[]>(() => {
+    if (!hollowBuild?.shell.feasible) return [];
+
+    const planeY = hollowBuild.shell.cutPlaneY;
+    const resolved: PlacedSupport[] = [];
+
+    for (const post of hollow.supports) {
+      const ceiling = ceilingHeightAt(hollowBuild.shell.positions, post.x, post.z, planeY);
+      // No ceiling means nothing above to hold up. The export drops the post
+      // for the same reason, so showing one here would be a lie.
+      if (ceiling === null) continue;
+
+      resolved.push({
+        id: post.id,
+        x: post.x,
+        z: post.z,
+        diameter: post.diameter,
+        baseY: planeY,
+        topY: ceiling,
+      });
+    }
+
+    return resolved;
+  }, [hollowBuild, hollow.supports]);
+
+  const moveSupport = useCallback((id: string, x: number, z: number) => {
+    setHollow((current) => ({
+      ...current,
+      supports: current.supports.map((post) => (post.id === id ? { ...post, x, z } : post)),
+    }));
+    setIsDirty(true);
+  }, []);
 
   const addSupport = useCallback(() => {
     if (!hollowBuild?.shell.feasible) return;
@@ -563,7 +648,12 @@ export function StudioPage(): JSX.Element {
 
           <div className={styles.panelBody}>
             {tab === 'location' && (
-              <LocationPicker value={location} onChange={handleLocationChange} height={260} />
+              <LocationPicker
+                value={location}
+                onChange={handleLocationChange}
+                onShapeFromTerrain={handleShapeFromTerrain}
+                height={260}
+              />
             )}
 
             {tab === 'shape' && (
@@ -714,6 +804,14 @@ export function StudioPage(): JSX.Element {
               onSculptCommit={commitSculpt}
               onReferenceMoved={moveReference}
               onReferenceSelected={setSelectedReference}
+              supports={placedSupports}
+              {...(hollowBuild?.shell.feasible
+                ? { supportBoundary: hollowBuild.shell.innerLoop.points }
+                : {})}
+              selectedSupportId={selectedSupport}
+              onSupportMoved={moveSupport}
+              onSupportSelected={setSelectedSupport}
+              xray={tab === 'hollow' && hollow.enabled && placedSupports.length > 0}
             />
 
             {isGenerating && (

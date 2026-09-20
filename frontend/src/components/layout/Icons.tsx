@@ -136,3 +136,18 @@ export const InboxIcon = ({ size = 18, className }: IconProps) => (
     <path d="M3 11.4h3.6l1 2h4.8l1-2H17v3.4a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 14.8z" />
   </svg>
 );
+
+export const MountainIcon = ({ size = 18, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M2 15.5l4.6-7.4 3.1 4.6" />
+    <path d="M7.6 15.5l4.3-8.2 6.1 8.2z" />
+  </svg>
+);
+
+export const LayersIcon = ({ size = 18, className }: IconProps) => (
+  <svg {...base(size)} className={className}>
+    <path d="M10 2.8l7 3.6-7 3.6-7-3.6z" />
+    <path d="M3 10.4l7 3.6 7-3.6" />
+    <path d="M3 13.9l7 3.6 7-3.6" />
+  </svg>
+);

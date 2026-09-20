@@ -5,15 +5,30 @@ import { type Plugin, defineConfig } from 'vite';
 /**
  * Hosts the app is allowed to talk to.
  *
- * There are exactly two, both keyless and both OpenStreetMap: raster tiles and
- * the Nominatim geocoder. Everything else — telemetry, designs, the 3D
- * generator — runs entirely in the browser against local storage.
+ * Four, every one of them keyless. Everything else — telemetry, designs, the
+ * 3D generator, the whole hollowing and printing pipeline — runs in the
+ * browser against local storage.
+ *
+ *   - `tile.openstreetmap.org`      street basemap
+ *   - `nominatim.openstreetmap.org` place search
+ *   - `server.arcgisonline.com`     Esri World Imagery, the aerial view
+ *   - `s3.amazonaws.com`            the public elevation model, read both as
+ *                                   map terrain and as the data a stone is
+ *                                   derived from
+ *
+ * The last two are what stands in for Google Earth. Google's tiles need a
+ * browser key, and a browser key in a static bundle is a published key — see
+ * SECURITY.md, and `src/data/geo.ts` for the rest of the reasoning.
  *
  * Adding an entry here means adding a party that can see traffic from this
- * page. Do not widen it casually, and never add a host that needs a key: the
- * key would ship in the bundle. See SECURITY.md.
+ * page. Do not widen it casually, and never add a host that needs a key.
  */
-const EXTERNAL_HOSTS = ['https://tile.openstreetmap.org', 'https://nominatim.openstreetmap.org'];
+const EXTERNAL_HOSTS = [
+  'https://tile.openstreetmap.org',
+  'https://nominatim.openstreetmap.org',
+  'https://server.arcgisonline.com',
+  'https://s3.amazonaws.com',
+];
 
 /**
  * Build-time Content-Security-Policy injection.
@@ -38,7 +53,9 @@ function contentSecurityPolicy(): Plugin {
     // Raster map tiles arrive as images; blob: covers canvas and worker output.
     `img-src 'self' data: blob: ${external}`,
     "font-src 'self' data:",
-    // Tile and geocoder fetches. No other network destination exists.
+    // Tiles, imagery, elevation, and the geocoder. Elevation and imagery are
+    // fetched rather than merely displayed: both are decoded on a canvas, so
+    // they need connect-src and not only img-src.
     `connect-src 'self' ${external}`,
     // The 3D generator and MapLibre both run module workers from blob URLs.
     "worker-src 'self' blob:",

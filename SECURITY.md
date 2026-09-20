@@ -14,8 +14,8 @@ remains is worth understanding.
 |---|---|
 | Where is my telemetry? | IndexedDB, in the browser you imported it into. It never leaves. |
 | Who else can see it? | Nobody, unless they have access to your device or browser profile. |
-| Are there any API keys? | None. Maps use OpenStreetMap, which is keyless. |
-| Does anything phone home? | Only map tiles and place searches, both to OpenStreetMap. |
+| Are there any API keys? | None. Every map, imagery, and elevation source is keyless. |
+| Does anything phone home? | Only map tiles, aerial imagery, elevation data, and place searches. |
 | Is the site itself private? | No. The **site** is public; your **data** is not in it. |
 
 ---
@@ -43,13 +43,32 @@ carries no data — only code.
 
 Nowhere. There are none.
 
-- **No API keys.** Map tiles come from `tile.openstreetmap.org` and place search
-  from `nominatim.openstreetmap.org`. Both are keyless.
+- **No API keys.** Map tiles come from `tile.openstreetmap.org`, place search
+  from `nominatim.openstreetmap.org`, aerial imagery from
+  `server.arcgisonline.com`, and elevation from the public tile set on
+  `s3.amazonaws.com`. All four are keyless.
 - **No passwords or sessions.** There are no accounts.
 - **No build-time secrets.** The deploy workflow injects nothing; the build takes
   no configuration at all.
 
 The bundle's only inlined value is an optional cosmetic environment label.
+
+### Why there is no Google Earth
+
+Google Earth and Google Maps were asked for by name, and are deliberately not
+used. Two reasons, either one sufficient:
+
+1. **The key would be published.** Their tiles require a browser API key. This
+   is a static site with no server, so a browser key is a key in the bundle,
+   and the bundle is world-readable. There is nowhere to hide it.
+2. **The terms forbid the use.** Google's terms prohibit deriving a dataset
+   from their imagery or elevation, which is precisely what the studio does —
+   it reads the ground and turns it into a 3D model you then own and print.
+
+What is there instead does the same job without either problem: Esri's World
+Imagery for the aerial view, the open global elevation model for relief, and
+MapLibre's terrain renderer to combine them into a view you can tilt and fly.
+Both sources are attributed in the map control, as their terms require.
 
 ### If a keyed provider is ever adopted
 
@@ -73,22 +92,29 @@ Never use a server-side or unrestricted key that way.
 
 ## Outbound network traffic
 
-The app contacts exactly two hosts, both declared in one place —
+The app contacts exactly four hosts, all declared in one place —
 `EXTERNAL_HOSTS` in `frontend/vite.config.ts` — which is also what generates the
 Content-Security-Policy. Adding a host there means adding a party that can
 observe traffic from the page.
 
 | Host | Why | What it sees |
 |---|---|---|
-| `tile.openstreetmap.org` | Map tiles | Which map areas you view, and your IP |
+| `tile.openstreetmap.org` | Street basemap | Which map areas you view, and your IP |
 | `nominatim.openstreetmap.org` | Place search in the studio | Your search terms, and your IP |
+| `server.arcgisonline.com` | Aerial imagery | Which map areas you view, and your IP |
+| `s3.amazonaws.com` | Elevation data, for map relief and for deriving a stone | Which areas you view or pin, and your IP |
 
-Neither receives your telemetry. Map tiles are requested for the area you are
+None of them receives your telemetry. Tiles are requested for the area you are
 viewing, which does reveal roughly where your readings are — if that matters,
-the map can be left closed and every other view still works.
+the map can be left closed and every other view still works. Dropping a pin
+requests elevation around it, which reveals that location with more precision
+than browsing does.
 
-Nominatim's usage policy allows one request per second; `data/geo.ts` enforces
-that with a queue rather than trusting the UI to.
+Nominatim's usage policy allows one request per second. Search-as-you-type
+makes that load-bearing rather than precautionary, so it is enforced twice:
+the input debounces and aborts, and `data/geo.ts` holds a queue that spaces
+whatever survives. The queue is the guarantee; the debounce is only an
+optimisation.
 
 ---
 
@@ -101,9 +127,11 @@ Generated at build time from the host list above and injected into
 default-src 'self';
 script-src 'self';
 style-src 'self' 'unsafe-inline';
-img-src 'self' data: blob: https://tile.openstreetmap.org https://nominatim.openstreetmap.org;
+img-src 'self' data: blob: https://tile.openstreetmap.org https://nominatim.openstreetmap.org
+        https://server.arcgisonline.com https://s3.amazonaws.com;
 font-src 'self' data:;
-connect-src 'self' https://tile.openstreetmap.org https://nominatim.openstreetmap.org;
+connect-src 'self' https://tile.openstreetmap.org https://nominatim.openstreetmap.org
+            https://server.arcgisonline.com https://s3.amazonaws.com;
 worker-src 'self' blob:;
 object-src 'none';
 base-uri 'self';

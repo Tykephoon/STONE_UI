@@ -394,3 +394,85 @@ export function pointInLoop(points: Point2[], x: number, z: number): boolean {
 
   return inside;
 }
+
+/**
+ * Nearest position inside a loop, kept `inset` millimetres clear of its edge.
+ *
+ * This is what makes a dragged support conform to the stone rather than
+ * escape it. Rejecting an out-of-bounds drag outright would be simpler and
+ * much worse to use: the post would stick at the wall while the cursor ran
+ * away from it. Sliding along the boundary instead keeps the post under the
+ * pointer in the one direction it can still travel.
+ *
+ * The inset is the post's own radius plus a little, so a post never overhangs
+ * the cavity floor it has to be printed on.
+ */
+export function clampIntoLoop(points: Point2[], x: number, z: number, inset: number): Point2 {
+  if (points.length < 3) return { x, z };
+
+  let bestX = x;
+  let bestZ = z;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const a = points[j]!;
+    const b = points[i]!;
+
+    const ex = b.x - a.x;
+    const ez = b.z - a.z;
+    const lengthSquared = ex * ex + ez * ez;
+
+    // Degenerate edges appear where a boundary doubles back on itself; the
+    // vertex is still a valid candidate, the edge is not.
+    const t =
+      lengthSquared < 1e-12
+        ? 0
+        : Math.max(0, Math.min(1, ((x - a.x) * ex + (z - a.z) * ez) / lengthSquared));
+
+    const px = a.x + ex * t;
+    const pz = a.z + ez * t;
+    const distance = Math.hypot(x - px, z - pz);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestX = px;
+      bestZ = pz;
+    }
+  }
+
+  const inside = pointInLoop(points, x, z);
+  if (inside && bestDistance >= inset) return { x, z };
+
+  // Step off the nearest edge point in whichever direction leads inward.
+  // Testing both rather than deriving the winding makes this correct for a
+  // loop traced either way round, which the clipper does not guarantee.
+  const dx = x - bestX;
+  const dz = z - bestZ;
+  const length = Math.hypot(dx, dz);
+
+  if (length < 1e-9) {
+    // The point sits exactly on the boundary, so there is no direction to
+    // push away from. Fall back to the loop's centre of mass.
+    let cx = 0;
+    let cz = 0;
+    for (const point of points) {
+      cx += point.x;
+      cz += point.z;
+    }
+    cx /= points.length;
+    cz /= points.length;
+
+    const toCentre = Math.hypot(cx - bestX, cz - bestZ);
+    if (toCentre < 1e-9) return { x: bestX, z: bestZ };
+    return {
+      x: bestX + ((cx - bestX) / toCentre) * inset,
+      z: bestZ + ((cz - bestZ) / toCentre) * inset,
+    };
+  }
+
+  const sign = inside ? 1 : -1;
+  return {
+    x: bestX + (dx / length) * inset * sign,
+    z: bestZ + (dz / length) * inset * sign,
+  };
+}

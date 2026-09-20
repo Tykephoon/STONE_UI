@@ -1,18 +1,21 @@
 /**
  * MapLibre wrapper.
  *
- * The style is built in the browser and points straight at OpenStreetMap's
- * keyless tiles — see `data/geo.ts` for why that is acceptable here and what
- * would have to change if a keyed provider were ever adopted.
+ * The style is built in the browser and points straight at keyless tiles — see
+ * `data/geo.ts` for why that is acceptable here and what would have to change
+ * if a keyed provider were ever adopted.
  *
  * Two modes:
  *   - `points`  plots telemetry readings, with optional selection
  *   - `picker`  a single draggable marker for choosing a location
+ *
+ * Either can run over aerial imagery, and either can load the elevation model,
+ * which turns the flat map into something that can be tilted into real relief.
  */
 import maplibregl, { type LngLatLike, type Map as MapLibreMap, type Marker } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { buildMapStyle } from '../../data/geo';
+import { type BasemapId, buildMapStyle } from '../../data/geo';
 import styles from './MapView.module.css';
 
 export interface MapPoint {
@@ -37,6 +40,10 @@ export interface MapViewProps {
   initialZoom?: number;
   /** Re-centres on this position when it changes (a search result, say). */
   flyTo?: { latitude: number; longitude: number; zoom?: number } | null;
+  /** Aerial imagery or the street map. */
+  basemap?: BasemapId;
+  /** Loads the elevation model so the map can be tilted into real relief. */
+  terrain?: boolean;
   className?: string;
 }
 
@@ -61,12 +68,22 @@ export function MapView({
   initialCenter = [-71.0892, 42.3398],
   initialZoom = 11,
   flyTo = null,
+  basemap = 'streets',
+  terrain = false,
   className,
 }: MapViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<Marker | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
+  /**
+   * Bumped whenever a style finishes loading.
+   *
+   * Switching basemaps replaces every source and layer, so anything this
+   * component added has to go back on afterwards. Counting style loads is what
+   * lets the effects below notice that their work was thrown away.
+   */
+  const [styleVersion, setStyleVersion] = useState(0);
 
   // Callbacks in refs so the map is created once and never torn down by a
   // parent re-render handing down a new function identity.
@@ -83,10 +100,12 @@ export function MapView({
     try {
       map = new maplibregl.Map({
         container,
-        style: buildMapStyle() as maplibregl.StyleSpecification,
+        style: buildMapStyle({ basemap, terrain }) as maplibregl.StyleSpecification,
         center: initialCenter,
         zoom: initialZoom,
         attributionControl: { compact: true },
+        // MapLibre stops at 60 by default. Terrain is worth seeing from lower.
+        maxPitch: 85,
       });
     } catch {
       setStatus('failed');
@@ -95,8 +114,11 @@ export function MapView({
 
     mapRef.current = map;
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    // The compass doubles as the tilt reset, so it earns its place once
+    // terrain is available to tilt into.
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), 'top-right');
     map.on('load', () => setStatus('ready'));
+    map.on('style.load', () => setStyleVersion((version) => version + 1));
     // Individual tile failures are common and self-healing; only a style-level
     // failure means the map will never render.
     map.on('error', (event) => {
@@ -114,6 +136,31 @@ export function MapView({
     // Created once; subsequent prop changes are handled by the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Swap the style when the basemap or terrain setting changes.
+   *
+   * `setStyle` rather than a fresh map: the camera, the marker, and the user's
+   * place in the world all survive it, and re-creating the map would throw all
+   * three away on every toggle.
+   */
+  const appliedStyle = useRef<string | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const key = `${basemap}:${terrain}`;
+    // The first style was set at construction; applying it again would drop
+    // every layer for no reason.
+    if (appliedStyle.current === null) {
+      appliedStyle.current = key;
+      return;
+    }
+    if (appliedStyle.current === key) return;
+    appliedStyle.current = key;
+
+    map.setStyle(buildMapStyle({ basemap, terrain }) as maplibregl.StyleSpecification);
+  }, [basemap, terrain]);
 
   /** Picker mode: maintain a single draggable marker. */
   useEffect(() => {
@@ -183,7 +230,13 @@ export function MapView({
     [points],
   );
 
-  /** Points mode: keep a GeoJSON source in sync with the readings. */
+  /**
+   * Points mode: keep a GeoJSON source in sync with the readings.
+   *
+   * Also runs after a style swap, when the source it maintains no longer
+   * exists — hence `styleVersion` in the dependencies.
+   */
+  const pointHandlersBound = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
     if (!map || mode !== 'points' || status !== 'ready') return;
@@ -220,20 +273,26 @@ export function MapView({
         },
       });
 
-      map.on('click', 'readings-points', (event) => {
-        const feature = event.features?.[0];
-        const id = feature?.properties?.id;
-        if (typeof id === 'string') onPointClickRef.current?.(id);
-      });
+      // Layer-scoped listeners outlive the layer, so a style swap that
+      // re-adds the layer must not re-add these: they would fire twice.
+      if (!pointHandlersBound.current) {
+        pointHandlersBound.current = true;
 
-      map.on('mouseenter', 'readings-points', () => {
-        map.getCanvas().style.cursor = 'pointer';
-      });
-      map.on('mouseleave', 'readings-points', () => {
-        map.getCanvas().style.cursor = '';
-      });
+        map.on('click', 'readings-points', (event) => {
+          const feature = event.features?.[0];
+          const id = feature?.properties?.id;
+          if (typeof id === 'string') onPointClickRef.current?.(id);
+        });
+
+        map.on('mouseenter', 'readings-points', () => {
+          map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', 'readings-points', () => {
+          map.getCanvas().style.cursor = '';
+        });
+      }
     }
-  }, [geojson, mode, status]);
+  }, [geojson, mode, status, styleVersion]);
 
   /** Fit the viewport to the plotted readings on first load. */
   const hasFitted = useRef(false);
@@ -274,7 +333,7 @@ export function MapView({
         <div className={styles.overlay} role="status">
           <p className={styles.failedTitle}>Map unavailable</p>
           <p className={styles.failedBody}>
-            OpenStreetMap could not be reached. Coordinates are still listed below.
+            The tile service could not be reached. Coordinates are still listed below.
           </p>
         </div>
       )}
