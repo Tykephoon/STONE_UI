@@ -18,6 +18,10 @@ import styles from './PrintPanel.module.css';
 
 export interface PrintPanelProps {
   geometry: BufferGeometry | null;
+  /** True when the Hollow tab is exporting a shell and base instead of a solid. */
+  hollowEnabled?: boolean;
+  /** False when the shape could not be hollowed and the export falls back. */
+  hollowFeasible?: boolean;
   onExportStl: () => void;
   onExportGltf: () => void;
   onExportObj: () => void;
@@ -36,6 +40,8 @@ const PRINTERS = [
 
 export function PrintPanel({
   geometry,
+  hollowEnabled = false,
+  hollowFeasible = true,
   onExportStl,
   onExportGltf,
   onExportObj,
@@ -71,6 +77,14 @@ export function PrintPanel({
         STL is exported at true size in millimetres, standing the way it sits on the grid. Slicers
         assume millimetres, so no rescaling is needed on import.
       </p>
+
+      {hollowEnabled && (
+        <p className={hollowFeasible ? styles.intro : styles.warning}>
+          {hollowFeasible
+            ? 'Hollow is on: this exports two files — the shell, and the base that clips into it. The figures below still describe the solid.'
+            : 'Hollow is on, but this shape cannot be hollowed at its current settings, so the export falls back to a solid. See the Hollow tab.'}
+        </p>
+      )}
 
       {stats && (
         <>
@@ -185,7 +199,7 @@ export function PrintPanel({
           onClick={onExportStl}
           iconLeft={<DownloadIcon size={15} />}
         >
-          STL for printing
+          {hollowEnabled && hollowFeasible ? 'STL — shell and base' : 'STL for printing'}
         </Button>
 
         <div className={styles.secondaryExports}>

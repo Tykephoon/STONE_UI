@@ -37,7 +37,10 @@ import {
   suggestPlacement,
 } from './referenceObjects';
 import { buildStl } from './printing';
+import { SUPPORT_DEFAULT_DIAMETER } from './baseAndSupports';
 import { emptySculpt, isSculpted } from './controlPoints';
+import { HollowPanel, type HollowConfig } from './HollowPanel';
+import { buildHollowParts, exportHollowStl } from './hollowExport';
 import {
   buildParameterLink,
   buildViewerLink,
@@ -51,7 +54,7 @@ import { DEFAULT_PARAMS, DIMENSION_LIMITS, sanitiseParams, seedFromCoordinates }
 import { useStoneGeometry } from './useStoneGeometry';
 import styles from './StudioPage.module.css';
 
-type PanelTab = 'shape' | 'scale' | 'print' | 'location' | 'library';
+type PanelTab = 'shape' | 'scale' | 'hollow' | 'print' | 'location' | 'library';
 
 type Axis = 'length' | 'width' | 'height';
 
@@ -86,6 +89,16 @@ export function StudioPage(): JSX.Element {
   const [hintSeen, setHintSeen] = useLocalPreference('studio.hintSeen', false);
   const showHint = !hintSeen;
   const dismissHint = useCallback(() => setHintSeen(true), [setHintSeen]);
+
+  const [hollow, setHollow] = useState<HollowConfig>({
+    enabled: false,
+    wallThickness: 2.4,
+    openingHeight: 20,
+    fit: 'normal',
+    plugDepth: 6,
+    supports: [],
+  });
+  const [selectedSupport, setSelectedSupport] = useState<string | null>(null);
 
   const [showControlPoints, setShowControlPoints] = useLocalPreference(
     'studio.showControlPoints',
@@ -367,21 +380,105 @@ export function StudioPage(): JSX.Element {
     toast.info('Sculpting cleared');
   }, [toast]);
 
+  /**
+   * Build the shell whenever the design or its hollow settings change.
+   *
+   * Deferred behind the geometry so it never runs mid-drag: hollowing walks
+   * every triangle twice and would stall a sculpt.
+   */
+  const hollowBuild = useMemo(() => {
+    if (!geometry || !hollow.enabled || isSculpting) return null;
+    try {
+      return buildHollowParts(geometry, hollow);
+    } catch {
+      // A shape the hollower cannot handle must not take the studio down.
+      return null;
+    }
+  }, [geometry, hollow, isSculpting]);
+
+  const hollowReport = useMemo(
+    () =>
+      hollowBuild
+        ? {
+            feasible: hollowBuild.shell.feasible,
+            cavityVolumeMm3: hollowBuild.shell.cavityVolumeMm3,
+            pinchedVertices: hollowBuild.shell.pinchedVertices,
+            shellTriangles: hollowBuild.shell.triangleCount,
+          }
+        : null,
+    [hollowBuild],
+  );
+
+  const addSupport = useCallback(() => {
+    if (!hollowBuild?.shell.feasible) return;
+
+    // Drop it at the middle of the cavity; the user drags it from there.
+    const points = hollowBuild.shell.innerLoop.points;
+    const centre = points.reduce(
+      (total, point) => ({
+        x: total.x + point.x / points.length,
+        z: total.z + point.z / points.length,
+      }),
+      { x: 0, z: 0 },
+    );
+
+    const id = `sup_${Date.now().toString(36)}`;
+    setHollow((current) => ({
+      ...current,
+      supports: [
+        ...current.supports,
+        { id, x: centre.x, z: centre.z, diameter: SUPPORT_DEFAULT_DIAMETER },
+      ],
+    }));
+    setSelectedSupport(id);
+  }, [hollowBuild]);
+
+  const removeSupport = useCallback((id: string) => {
+    setHollow((current) => ({
+      ...current,
+      supports: current.supports.filter((post) => post.id !== id),
+    }));
+    setSelectedSupport((current) => (current === id ? null : current));
+  }, []);
+
   const handleExportStl = useCallback(() => {
     if (!geometry) return;
     setIsExporting(true);
+
     try {
+      if (hollow.enabled && hollowBuild?.shell.feasible) {
+        const files = exportHollowStl(hollowBuild, name);
+        const dropped = hollowBuild.droppedSupports;
+
+        toast.success(
+          files.baseName ? 'Two STLs exported' : 'STL exported',
+          [
+            files.baseName ? 'Shell and base, both at 100% scale.' : 'Open at 100% scale.',
+            dropped > 0 ? `${dropped} post${dropped === 1 ? '' : 's'} skipped — outside the cavity.` : '',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        );
+        return;
+      }
+
       triggerDownload(
         new Blob([buildStl(geometry, name)], { type: 'model/stl' }),
         safeFilename(name, 'stl'),
       );
-      toast.success('STL exported', 'Open it in your slicer at 100% scale.');
+
+      toast.success(
+        'STL exported',
+        hollow.enabled
+          ? 'Solid — the shape could not be hollowed at these settings.'
+          : 'Open it in your slicer at 100% scale.',
+      );
     } catch {
       toast.error('Export failed', 'Try a lower mesh resolution.');
     } finally {
       setIsExporting(false);
     }
-  }, [geometry, name, toast]);
+  }, [geometry, name, toast, hollow.enabled, hollowBuild]);
 
   const handleExport = useCallback(
     async (format: 'glb' | 'obj') => {
@@ -457,6 +554,7 @@ export function StudioPage(): JSX.Element {
             options={[
               { value: 'shape', label: 'Shape' },
               { value: 'scale', label: 'Scale' },
+              { value: 'hollow', label: 'Hollow' },
               { value: 'print', label: 'Print' },
               { value: 'location', label: 'Place' },
               { value: 'library', label: 'Saved' },
@@ -498,10 +596,24 @@ export function StudioPage(): JSX.Element {
               />
             )}
 
+            {tab === 'hollow' && (
+              <HollowPanel
+                config={hollow}
+                onChange={setHollow}
+                report={hollowReport}
+                maxOpeningHeight={Math.round(params.dimensions.height_mm * 0.55)}
+                onAddSupport={addSupport}
+                onRemoveSupport={removeSupport}
+                selectedSupportId={selectedSupport}
+              />
+            )}
+
             {tab === 'print' && (
               <PrintPanel
                 geometry={geometry}
                 onExportStl={handleExportStl}
+                hollowEnabled={hollow.enabled}
+                hollowFeasible={hollowReport?.feasible ?? true}
                 onExportGltf={() => handleExport('glb')}
                 onExportObj={() => handleExport('obj')}
                 isExporting={isExporting}

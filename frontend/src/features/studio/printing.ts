@@ -171,9 +171,18 @@ export function estimateMass(volumeMm3: number, density: number, infill: number)
  * bytes per facet.
  */
 export function buildStl(geometry: BufferGeometry, name: string): ArrayBuffer {
-  const position = geometry.getAttribute('position');
-  const array = position.array as Float32Array;
-  const triangleCount = position.count / 3;
+  return buildStlFromPositions(geometry.getAttribute('position').array as Float32Array, name);
+}
+
+/**
+ * Same writer, over a raw triangle soup.
+ *
+ * The hollow shell and its supports never become a BufferGeometry — they are
+ * built for export, not for display — so they are written straight from their
+ * position arrays.
+ */
+export function buildStlFromPositions(array: Float32Array, name: string): ArrayBuffer {
+  const triangleCount = array.length / 9;
 
   const buffer = new ArrayBuffer(84 + triangleCount * 50);
   const view = new DataView(buffer);

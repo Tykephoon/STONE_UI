@@ -114,7 +114,7 @@ Re-importing the same file is safe: records merge by id rather than duplicating.
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `:5173` |
-| `npm test` | 117 tests — CSV import, generator, sculpting, placement, printability |
+| `npm test` | 141 tests — CSV import, generator, sculpting, hollowing, printability |
 | `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
@@ -220,6 +220,38 @@ Before you export it shows:
 glTF and OBJ are also available: glTF keeps the vertex colours for rendering,
 OBJ is the lowest common denominator for other CAD tools. STL carries geometry
 only — no colour — which is what a slicer wants.
+
+### Hollow printing
+
+The **Hollow** tab turns the stone into a vessel: a shell with an opening
+underneath, plus a separate base that clips in — so something can be sealed
+inside.
+
+- **Wall thickness** 1.2–8 mm, offset along the surface normal rather than
+  radially, so the wall keeps its thickness on steep faces instead of thinning
+  exactly where a print splits.
+- **Opening height** sets where the underside is cut. The cut is always raised
+  clear of the cavity floor, because cutting below it passes through solid
+  material and leaves nothing to open into.
+- **Base fit** is tight / normal / loose (0.1 / 0.2 / 0.35 mm clearance per
+  side). The base prints flat side down with no supports, and has a chamfered
+  lead-in so it starts square rather than catching.
+- **Internal posts** run from the base up to the cavity ceiling, placed and
+  dragged in the viewport. They flare at the foot, where a print is most likely
+  to let go, and narrow at the head so they part cleanly if removed.
+
+Export produces **two STLs** — shell and base.
+
+If the shape cannot be hollowed at the chosen settings — the wall leaves no
+cavity, the cross-section breaks into pieces, or the boundary is not a simple
+closed curve — it says so and falls back to exporting the solid. **It never
+emits an open shell.** The final check is the manifold test itself, run on the
+finished shell before it is returned, so an unanticipated failure is caught
+even if none of the specific guards saw it coming.
+
+Posts are written as separate closed bodies in the same file. Slicers union
+overlapping closed volumes when they slice, so the posts fuse into the wall
+without a boolean operation, and each body stays watertight on its own.
 
 **Printability is a standing constraint, not a one-off check.**
 `test/printability.test.ts` runs every shaping feature — sculpting at both
