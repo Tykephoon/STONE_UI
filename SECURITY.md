@@ -14,7 +14,7 @@ remains is worth understanding.
 |---|---|
 | Where is my telemetry? | IndexedDB, in the browser you imported it into. It never leaves. |
 | Who else can see it? | Nobody, unless they have access to your device or browser profile. |
-| Are there any API keys? | None. Every map, imagery, and elevation source is keyless. |
+| Are there any API keys? | None. Every map, imagery, and elevation source is keyless, and the photo analysis runs locally rather than calling a model. |
 | Does anything phone home? | Only map tiles, aerial imagery, elevation data, and place searches. |
 | Is the site itself private? | No. The **site** is public; your **data** is not in it. |
 
@@ -52,6 +52,22 @@ Nowhere. There are none.
   no configuration at all.
 
 The bundle's only inlined value is an optional cosmetic environment label.
+
+### Why the photo analysis is not a model call
+
+The Photo tab reads a rock out of a picture. It would be easier and probably
+better to send that picture to a hosted vision model — and it is not done,
+for the same reason the map has no key. A hosted model needs an API key, this
+is a static site, and a key in a static bundle is published the moment it
+deploys. There is no server to hold one.
+
+So the analysis is local computer vision in
+`frontend/src/features/studio/rockAnalysis.ts`: background segmentation,
+gradient statistics, structure-tensor coherence, and a radial profile of the
+outline. A second consequence is worth stating plainly, because it is the part
+users care about: **the image never leaves the machine.** It is decoded in the
+tab and measured in the tab. There is no upload, and `connect-src` lists no
+host that could receive one.
 
 ### Why there is no Google Earth
 
@@ -130,6 +146,7 @@ style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob: https://tile.openstreetmap.org https://nominatim.openstreetmap.org
         https://server.arcgisonline.com https://s3.amazonaws.com;
 font-src 'self' data:;
+media-src 'self' blob:;
 connect-src 'self' https://tile.openstreetmap.org https://nominatim.openstreetmap.org
             https://server.arcgisonline.com https://s3.amazonaws.com;
 worker-src 'self' blob:;

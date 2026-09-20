@@ -114,7 +114,7 @@ Re-importing the same file is safe: records merge by id rather than duplicating.
 | Command | Does |
 |---|---|
 | `npm run dev` | Dev server on `:5173` |
-| `npm test` | 182 tests — CSV import, generator, sculpting, hollowing, terrain, printability |
+| `npm test` | 218 tests — CSV import, generator, sculpting, hollowing, terrain, photo analysis, printability |
 | `npm run typecheck` | All four TypeScript projects |
 | `npm run build` | Typecheck, build, then **scan the bundle for secrets** |
 | `npm run scan` | Run the secret scan against an existing `dist/` |
@@ -191,6 +191,36 @@ horizontally — sampling known summits reads Mount Washington at 1916 m against
 a true 1917 m, and Badwater at −77 m against −86 m. It is not live, because no
 free source is and radar-measured ground does not move by the minute. The
 imagery is whatever Esri publishes today.
+
+### Building one from a photograph
+
+The **Photo** tab takes a real rock and makes the stone conform to it.
+
+- **Drop in an image or a video.** A clip is often easier to take than a good
+  photo, so if it is a video you scrub to the frame that shows the rock best
+  and use that one.
+- **Drag a box around the rock.** Include a little of what it is sitting on —
+  the analysis learns the background from the edge of your box, then separates
+  the rock from it. A box drawn tight inside the rock has no background to
+  learn from; it says so rather than quietly producing a worse stone.
+- **It reads colour, surface, and outline.** Base and crevice colours, how
+  rough and how fine-grained the surface is, whether the edges run straight
+  (flat fractured faces) or curve, and how much it glints. The outline's radial
+  profile becomes the stone's silhouette.
+- **Nothing is uploaded.** The file is decoded in your tab and never leaves the
+  machine — there is no server to send it to.
+
+**There is no model call, and there cannot be.** Every hosted vision API needs
+a key, this is a static site, and a key in a static bundle is a published key.
+What runs instead is ordinary computer vision in `rockAnalysis.ts` —
+background segmentation, gradient statistics, structure-tensor coherence, and a
+radial profile. Less clever than a model, and far more legible: every number
+the panel shows traces to an operation you can read.
+
+Two limits it states rather than hides. **Depth is not measurable** from one
+picture, so the stone is built about as deep as it is wide. And **the printed
+length is never changed** — the photograph decides the shape, you decide the
+size.
 
 ### Sculpting it
 
@@ -356,6 +386,7 @@ frontend/
       csv.ts             Parsing, column mapping, validation, export
       geo.ts             Basemaps, aerial imagery, geocoding, ground colour
       terrain.ts         Real elevation: tiles in, landform measurements out
+      media.ts           Decoding an uploaded image or video, frame by frame
       export.ts          File downloads and backups
     components/        ui · charts · layout · map · filters
     features/
@@ -363,7 +394,7 @@ frontend/
       studio/            generator · viewer · gizmos · printing · references
     hooks/  lib/  styles/
   test/                CSV import · generator · sculpting · hollowing · terrain
-                       · placement · printability
+                       · photo analysis · placement · printability
 
 backend/               Optional. Unused by the frontend — see Live ingest.
 ```

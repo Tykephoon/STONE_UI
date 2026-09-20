@@ -1,0 +1,186 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.intro,
+.note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-relaxed);
+}
+
+.error {
+  font-size: var(--text-xs);
+  color: var(--status-critical, var(--status-warning));
+}
+
+.warn {
+  font-size: var(--text-xs);
+  color: var(--status-warning);
+  line-height: var(--leading-relaxed);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* ---- Picking a file --------------------------------------------------- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: var(--space-4) var(--space-3);
+  text-align: center;
+  background: var(--surface-inset);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
+}
+
+.dropzone:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.dropzone:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-focus);
+}
+
+/* Visually hidden, still focusable and still the click target for the label. */
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dropIcon {
+  color: var(--text-muted);
+}
+
+.dropText {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  /* A phone's filename can be long, and must not widen the panel. */
+  overflow-wrap: anywhere;
+}
+
+.dropHint {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+
+/* ---- The frame and the selection box ---------------------------------- */
+
+.stage {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-default);
+}
+
+.canvas {
+  display: block;
+  width: 100%;
+  /* The pointer is a crosshair because dragging here draws, not scrolls. */
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.selection {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px solid var(--accent);
+  /*
+   * A ring of shadow rather than a dimmed overlay outside the box: the point
+   * of the selection is judging what is inside it, and tinting the rest
+   * changes how the edge between rock and ground reads.
+   */
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.55),
+    0 0 0 9999px rgb(0 0 0 / 0.32);
+}
+
+.scrubber {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.selectionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* ---- The reading ------------------------------------------------------ */
+
+.reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.readingHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.swatches {
+  display: flex;
+  gap: 4px;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong, var(--border-default));
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+}
+
+.stats dt {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.stats dd {
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}

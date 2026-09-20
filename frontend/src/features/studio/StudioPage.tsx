@@ -27,6 +27,8 @@ import { useLocalPreference } from '../../hooks/useLocalPreference';
 import { formatCount } from '../../lib/format';
 import { formatRelative } from '../../lib/time';
 import { ceilingHeightAt } from './baseAndSupports';
+import { ImagePanel } from './ImagePanel';
+import { type RockAnalysis, deriveStoneFromImage } from './rockAnalysis';
 import { LocationPicker, type PickedLocation, type TerrainReading } from './LocationPicker';
 import { deriveStoneFromTerrain } from './terrainStone';
 import { PrintPanel } from './PrintPanel';
@@ -56,7 +58,7 @@ import { DEFAULT_PARAMS, DIMENSION_LIMITS, sanitiseParams, seedFromCoordinates }
 import { useStoneGeometry } from './useStoneGeometry';
 import styles from './StudioPage.module.css';
 
-type PanelTab = 'shape' | 'scale' | 'hollow' | 'print' | 'location' | 'library';
+type PanelTab = 'shape' | 'scale' | 'hollow' | 'print' | 'location' | 'photo' | 'library';
 
 type Axis = 'length' | 'width' | 'height';
 
@@ -251,6 +253,26 @@ export function StudioPage(): JSX.Element {
       setResetSignal((value) => value + 1);
       setIsDirty(true);
       toast.success(derived.character, derived.notes[0] ?? 'Shaped from the elevation at the pin.');
+    },
+    [params, applyParams, toast],
+  );
+
+  /**
+   * Rebuild the stone from a photograph of a real rock.
+   *
+   * Same contract as the terrain derivation: explicit rather than automatic,
+   * and the printed length is preserved. Where the photo yielded no outline,
+   * the derivation keeps the current proportions and changes only what it
+   * actually measured.
+   */
+  const handleShapeFromImage = useCallback(
+    (analysis: RockAnalysis) => {
+      const derived = deriveStoneFromImage(params, analysis);
+
+      applyParams(derived.params);
+      setResetSignal((value) => value + 1);
+      setIsDirty(true);
+      toast.success(derived.character, derived.notes[1] ?? 'Shaped from the photograph.');
     },
     [params, applyParams, toast],
   );
@@ -642,11 +664,14 @@ export function StudioPage(): JSX.Element {
               { value: 'hollow', label: 'Hollow' },
               { value: 'print', label: 'Print' },
               { value: 'location', label: 'Place' },
+              { value: 'photo', label: 'Photo' },
               { value: 'library', label: 'Saved' },
             ]}
           />
 
           <div className={styles.panelBody}>
+            {tab === 'photo' && <ImagePanel onShapeFromImage={handleShapeFromImage} />}
+
             {tab === 'location' && (
               <LocationPicker
                 value={location}

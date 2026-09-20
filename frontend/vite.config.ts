@@ -53,6 +53,10 @@ function contentSecurityPolicy(): Plugin {
     // Raster map tiles arrive as images; blob: covers canvas and worker output.
     `img-src 'self' data: blob: ${external}`,
     "font-src 'self' data:",
+    // An uploaded photo or clip is decoded from a blob URL. Video is not
+    // covered by img-src, and without this it falls back to default-src and
+    // is blocked. No remote media host is listed: nothing is ever uploaded.
+    "media-src 'self' blob:",
     // Tiles, imagery, elevation, and the geocoder. Elevation and imagery are
     // fetched rather than merely displayed: both are decoded on a canvas, so
     // they need connect-src and not only img-src.
